@@ -1,0 +1,17 @@
+[project]
+name = "crn-py"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "graphviz>=0.20.3",
+    "matplotlib>=3.10.0",
+    "networkx",
+    "numpy",
+    "pandas",
+    "pygraphviz>=1.14",
+    "rdkit>=2024.9.4",
+    "scipy>=1.15.1",
+    "tqdm>=4.67.1",
+]

@@ -1,0 +1,406 @@
+<?xml version='1.0' encoding='utf-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
+  <key id="d1" for="edge" attr.name="type" attr.type="string" />
+  <key id="d0" for="node" attr.name="type" attr.type="string" />
+  <graph edgedefault="directed">
+    <node id="C + [H]O">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: C + [H]O → [H]O + [H]C">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="[H]O + [H]C">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="[H]O + [HH]">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: [H]O + [HH] → O + [HH]">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="O + [HH]">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: [H]O + [H]C → C + [H]O">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="CO + [H]O">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: CO + [H]O → CO.O">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="CO.O">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="CO + [H]C">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: CO + [H]C → CO + C">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="CO + C">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="O + C">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: O + C → O + [H]C">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="O + [H]C">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: O + [H]C → O + C">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: CO + [H]C → C.CO">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="C.CO">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="CO">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: CO → C + O">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="C + O">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="CO + O">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: CO + O → CO + [H]O">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="[HH] + [H]C">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: [HH] + [H]C → C + [HH]">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="C + [HH]">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: C + [HH] → [HH] + [H]C">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: CO + O → CO.O">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: O + [H]C → [H]O + [H]C">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: O + [H]C → C + [H]O">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: [H]O + [H]C → C.O">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="C.O">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: C + [H]O → C.O">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: [H]O + [HH] → O.[HH]">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="O.[HH]">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: O + C → [H]O + [H]C">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: [HH] + [H]C → C.[HH]">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="C.[HH]">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: C + [H]O → O + [H]C">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: CO + C → C.CO">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: [H]O + [H]C → O + [H]C">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: O + C → C + [H]O">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: CO + C → CO + [H]C">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="CO + [HH]">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: CO + [HH] → CO.[HH]">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="CO.[HH]">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="O + [H]O">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: O + [H]O → O.O">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="O.O">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: O + [HH] → [H]O + [HH]">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: CO + [H]O → CO + O">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: O + [H]C → C.O">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: [H]O + [H]C → O + C">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: O + [HH] → O.[HH]">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: C + [HH] → C.[HH]">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="C + [H]C">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: C + [H]C → C.C">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="C.C">
+      <data key="d0">molecule</data>
+    </node>
+    <node id="Reaction: C + [H]O → O + C">
+      <data key="d0">reaction</data>
+    </node>
+    <node id="Reaction: O + C → C.O">
+      <data key="d0">reaction</data>
+    </node>
+    <edge source="C + [H]O" target="Reaction: C + [H]O → [H]O + [H]C">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="C + [H]O" target="Reaction: C + [H]O → C.O">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="C + [H]O" target="Reaction: C + [H]O → O + [H]C">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="C + [H]O" target="Reaction: C + [H]O → O + C">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: C + [H]O → [H]O + [H]C" target="[H]O + [H]C">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="[H]O + [H]C" target="Reaction: [H]O + [H]C → C + [H]O">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="[H]O + [H]C" target="Reaction: [H]O + [H]C → C.O">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="[H]O + [H]C" target="Reaction: [H]O + [H]C → O + [H]C">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="[H]O + [H]C" target="Reaction: [H]O + [H]C → O + C">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="[H]O + [HH]" target="Reaction: [H]O + [HH] → O + [HH]">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="[H]O + [HH]" target="Reaction: [H]O + [HH] → O.[HH]">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: [H]O + [HH] → O + [HH]" target="O + [HH]">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="O + [HH]" target="Reaction: O + [HH] → [H]O + [HH]">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="O + [HH]" target="Reaction: O + [HH] → O.[HH]">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: [H]O + [H]C → C + [H]O" target="C + [H]O">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="CO + [H]O" target="Reaction: CO + [H]O → CO.O">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="CO + [H]O" target="Reaction: CO + [H]O → CO + O">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: CO + [H]O → CO.O" target="CO.O">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="CO + [H]C" target="Reaction: CO + [H]C → CO + C">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="CO + [H]C" target="Reaction: CO + [H]C → C.CO">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: CO + [H]C → CO + C" target="CO + C">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="CO + C" target="Reaction: CO + C → C.CO">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="CO + C" target="Reaction: CO + C → CO + [H]C">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="O + C" target="Reaction: O + C → O + [H]C">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="O + C" target="Reaction: O + C → [H]O + [H]C">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="O + C" target="Reaction: O + C → C + [H]O">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="O + C" target="Reaction: O + C → C.O">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: O + C → O + [H]C" target="O + [H]C">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="O + [H]C" target="Reaction: O + [H]C → O + C">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="O + [H]C" target="Reaction: O + [H]C → [H]O + [H]C">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="O + [H]C" target="Reaction: O + [H]C → C + [H]O">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="O + [H]C" target="Reaction: O + [H]C → C.O">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: O + [H]C → O + C" target="O + C">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: CO + [H]C → C.CO" target="C.CO">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="CO" target="Reaction: CO → C + O">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: CO → C + O" target="C + O">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="CO + O" target="Reaction: CO + O → CO + [H]O">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="CO + O" target="Reaction: CO + O → CO.O">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: CO + O → CO + [H]O" target="CO + [H]O">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="[HH] + [H]C" target="Reaction: [HH] + [H]C → C + [HH]">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="[HH] + [H]C" target="Reaction: [HH] + [H]C → C.[HH]">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: [HH] + [H]C → C + [HH]" target="C + [HH]">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="C + [HH]" target="Reaction: C + [HH] → [HH] + [H]C">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="C + [HH]" target="Reaction: C + [HH] → C.[HH]">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: C + [HH] → [HH] + [H]C" target="[HH] + [H]C">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: CO + O → CO.O" target="CO.O">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: O + [H]C → [H]O + [H]C" target="[H]O + [H]C">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: O + [H]C → C + [H]O" target="C + [H]O">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: [H]O + [H]C → C.O" target="C.O">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: C + [H]O → C.O" target="C.O">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: [H]O + [HH] → O.[HH]" target="O.[HH]">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: O + C → [H]O + [H]C" target="[H]O + [H]C">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: [HH] + [H]C → C.[HH]" target="C.[HH]">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: C + [H]O → O + [H]C" target="O + [H]C">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: CO + C → C.CO" target="C.CO">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: [H]O + [H]C → O + [H]C" target="O + [H]C">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: O + C → C + [H]O" target="C + [H]O">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: CO + C → CO + [H]C" target="CO + [H]C">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="CO + [HH]" target="Reaction: CO + [HH] → CO.[HH]">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: CO + [HH] → CO.[HH]" target="CO.[HH]">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="O + [H]O" target="Reaction: O + [H]O → O.O">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: O + [H]O → O.O" target="O.O">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: O + [HH] → [H]O + [HH]" target="[H]O + [HH]">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: CO + [H]O → CO + O" target="CO + O">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: O + [H]C → C.O" target="C.O">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: [H]O + [H]C → O + C" target="O + C">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: O + [HH] → O.[HH]" target="O.[HH]">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: C + [HH] → C.[HH]" target="C.[HH]">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="C + [H]C" target="Reaction: C + [H]C → C.C">
+      <data key="d1">reactant</data>
+    </edge>
+    <edge source="Reaction: C + [H]C → C.C" target="C.C">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: C + [H]O → O + C" target="O + C">
+      <data key="d1">product</data>
+    </edge>
+    <edge source="Reaction: O + C → C.O" target="C.O">
+      <data key="d1">product</data>
+    </edge>
+  </graph>
+</graphml>
