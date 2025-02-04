@@ -9,15 +9,16 @@ import argparse
 import logging
 
 class ReactionNetwork:
-	def __init__(self, max_atoms=4, atoms=["C", "H", "O"]):
+	def __init__(self, max_atoms=4, atoms=None):
 		self.max_atoms = max_atoms
-		self.atoms = atoms
+		self.atoms = atoms if atoms is not None else ["C", "H", "O"]
+		self.heavy_atoms = list(filter(lambda x: x != "H", self.atoms))
 		self.molecules = set()
 		self.reactions = set()
 		self.graph = nx.DiGraph()
 
 	def generate_compositions(self):
-		ranges = [range(self.max_atoms + 1)] * len(self.atoms)
+		ranges = [range(self.max_atoms + 1)] * len(self.heavy_atoms)
 		return (
 			{ atom: count for atom, count in zip(self.atoms, composition) if count > 0 }
 			for composition in itertools.product(*ranges) if any(composition)
@@ -46,7 +47,7 @@ class ReactionNetwork:
 		for comp in self.generate_compositions():
 				mol = self.composition_to_mol(comp)
 				if mol and Chem.SanitizeMol(mol, catchErrors=True) == 0:
-					self.molecules.add(Chem.MolToSmiles(mol))
+					self.molecules.add(Chem.MolToSmiles(mol, canonical=True, allHsExplicit=True))
 		
 		logging.info(f"Generated {len(self.molecules)} molecules.")
 
@@ -201,7 +202,7 @@ if __name__ == "__main__":
 	print("Constructing reaction network graph...")
 	network.construct_graph()
 
-	print(network.graph)
+	print(network.reactions)
 
 	network.save_network()
 	network.save_graph_as_png()
