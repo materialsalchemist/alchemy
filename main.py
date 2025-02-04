@@ -18,7 +18,12 @@ class ReactionNetwork:
 		self.graph = nx.DiGraph()
 
 	def generate_compositions(self):
-		ranges = [range(self.max_atoms + 1)] * len(self.heavy_atoms)
+		# ranges = [range(self.max_atoms + 1)] * len(self.heavy_atoms)
+		# return (
+		# 	{ atom: count for atom, count in zip(self.heavy_atoms, composition) if count > 0 }
+		# 	for composition in itertools.product(*ranges) if any(composition)
+		# )
+		ranges = [range(self.max_atoms + 1)] * len(self.atoms)
 		return (
 			{ atom: count for atom, count in zip(self.atoms, composition) if count > 0 }
 			for composition in itertools.product(*ranges) if any(composition)
@@ -37,7 +42,19 @@ class ReactionNetwork:
 		for i in range(len(all_indices) - 1):
 			mol.AddBond(all_indices[i], all_indices[i + 1], Chem.BondType.SINGLE)
 
-		return mol.GetMol()
+
+		try:
+			mol.UpdatePropertyCache()
+
+			# mol = Chem.AddHs(mol)
+			# mol.UpdatePropertyCache()
+			Chem.SanitizeMol(mol)
+
+			return mol
+
+		except Exception as e:
+			print("Sanitization failed:", e)
+			return None
 
 	def generate_molecules(self):
 		"""Systematically generates molecular fragments within the C-H-O subspace."""
@@ -46,8 +63,9 @@ class ReactionNetwork:
 
 		for comp in self.generate_compositions():
 				mol = self.composition_to_mol(comp)
-				if mol and Chem.SanitizeMol(mol, catchErrors=True) == 0:
-					self.molecules.add(Chem.MolToSmiles(mol, canonical=True, allHsExplicit=True))
+				if mol:
+					# self.molecules.add(Chem.MolToSmiles(mol, canonical=True, allHsExplicit=True))
+					self.molecules.add(Chem.MolToSmiles(mol, canonical=True))
 		
 		logging.info(f"Generated {len(self.molecules)} molecules.")
 
@@ -104,23 +122,51 @@ class ReactionNetwork:
 
 				new_mol.RemoveBond(a1, a2)
 				new_mol.AddBond(a1, a2, bond.GetBondType())
-
+				new_mol.UpdatePropertyCache()
+				
 				new_mol = new_mol.GetMol()
 				if new_mol and Chem.SanitizeMol(new_mol, catchErrors=True) == 0:
 					rearranged_smiles = Chem.MolToSmiles(new_mol)
 					if rearranged_smiles and rearranged_smiles != smiles:
 						new_reactions.add((smiles, rearranged_smiles))
-
+		
 		self.reactions.update(new_reactions)
 
 	def generate_transfer_reactions(self):
-		"""Generates transfer reactions where atoms exchange between molecules."""
+		"""
+		Generate transfer reactions by combining two bond dissociation reactions
+		that share a common fragment.
+
+		For example, if we have:
+				Reaction 1: A -> B + C
+				Reaction 2: D -> B + E
+		then a transfer reaction can be defined as:
+				A + E -> C + D
+
+		This function iterates over pairs of dissociation reactions, checks for exactly one
+		common fragment in their products, and constructs a new reaction accordingly.
+		"""
+
 		new_reactions = set()
 
-		for reactant1, product1 in self.reactions:
-			for reactant2, product2 in self.reactions:
-				if product1 == product2 and reactant1 != reactant2:
-					new_reactions.add((reactant1, reactant2))
+		for (react1, prod1), (react2, prod2) in itertools.combinations(self.reactions, 2):
+			frags1 = set(prod1.split(" + "))
+			frags2 = set(prod2.split(" + "))
+
+			common = frags1.intersection(frags2)
+			if len(common) == 1:
+				common_frag = common.pop()
+
+				p1_rest = frags1 - {common_frag}
+				p2_rest = frags2 - {common_frag}
+
+				if len(p1_rest) == 1 and len(p2_rest) == 1:
+					frag1 = next(iter(p1_rest))
+					frag2 = next(iter(p2_rest))
+
+					new_left = f"{react1} + {frag2}"
+					new_right = f"{frag1} + {react2}"
+					new_reactions.add((new_left, new_right))
 
 		self.reactions.update(new_reactions)
 
@@ -192,10 +238,15 @@ if __name__ == "__main__":
 	print("Generating bond dissociation reactions...")
 	network.generate_bond_dissociation()
 	print(f"There are {len(network.reactions)} dissociation reactions")
+	print(network.reactions)
 
-	print("Generating rearrangement and transfer reactions...")
+	print("Generating rearrangement reactions...")
 	network.generate_bond_formation()
 	network.generate_rearrangements()
+	print(f"There are {len(network.reactions)} reactions")
+
+	print("Generating transfer reactions...")
+	print(network.reactions)
 	network.generate_transfer_reactions()
 	print(f"There are {len(network.reactions)} reactions")
 
