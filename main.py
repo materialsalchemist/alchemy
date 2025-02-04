@@ -1,3 +1,4 @@
+from collections import Counter
 import itertools
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -5,8 +6,10 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from tqdm import tqdm
 
-import argparse
-import logging
+def count_atom_types(smiles):
+	mol = Chem.MolFromSmiles(smiles, sanitize=True)
+	mol = Chem.rdmolops.AddHs(mol)
+	return Counter([atom.GetSymbol() for atom in mol.GetAtoms()])
 
 class ReactionNetwork:
 	def __init__(self, max_atoms=4, atoms=None):
@@ -18,14 +21,9 @@ class ReactionNetwork:
 		self.graph = nx.DiGraph()
 
 	def generate_compositions(self):
-		# ranges = [range(self.max_atoms + 1)] * len(self.heavy_atoms)
-		# return (
-		# 	{ atom: count for atom, count in zip(self.heavy_atoms, composition) if count > 0 }
-		# 	for composition in itertools.product(*ranges) if any(composition)
-		# )
-		ranges = [range(self.max_atoms + 1)] * len(self.atoms)
+		ranges = [range(self.max_atoms + 1)] * len(self.heavy_atoms)
 		return (
-			{ atom: count for atom, count in zip(self.atoms, composition) if count > 0 }
+			{ atom: count for atom, count in zip(self.heavy_atoms, composition) if count > 0 }
 			for composition in itertools.product(*ranges) if any(composition)
 		)
 
@@ -42,12 +40,8 @@ class ReactionNetwork:
 		for i in range(len(all_indices) - 1):
 			mol.AddBond(all_indices[i], all_indices[i + 1], Chem.BondType.SINGLE)
 
-
 		try:
 			mol.UpdatePropertyCache()
-
-			# mol = Chem.AddHs(mol)
-			# mol.UpdatePropertyCache()
 			Chem.SanitizeMol(mol)
 
 			return mol
@@ -62,11 +56,13 @@ class ReactionNetwork:
 		self.molecules.clear()
 
 		for comp in self.generate_compositions():
-				mol = self.composition_to_mol(comp)
-				if mol:
-					# self.molecules.add(Chem.MolToSmiles(mol, canonical=True, allHsExplicit=True))
-					self.molecules.add(Chem.MolToSmiles(mol, canonical=True))
-		
+			mol = self.composition_to_mol(comp)
+			if mol:
+				# self.molecules.add(Chem.MolToSmiles(mol, canonical=True, allHsExplicit=True))
+				smi = Chem.MolToSmiles(mol, canonical=True, allHsExplicit=True)
+				logging.info(f"{comp} -> {smi}")
+				self.molecules.add(smi)
+
 		logging.info(f"Generated {len(self.molecules)} molecules.")
 
 	def generate_bond_dissociation(self):
@@ -79,14 +75,29 @@ class ReactionNetwork:
 
 			for bond in mol.GetBonds():
 				new_mol = Chem.RWMol(mol)
-				
+
 				a1, a2 = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
 				new_mol.RemoveBond(a1, a2)
-				
-				fragments = Chem.GetMolFrags(new_mol.GetMol(), asMols=True)
-				if len(fragments) == 2:
-					smi1, smi2 = sorted([Chem.MolToSmiles(fragments[0]), Chem.MolToSmiles(fragments[1])])
-					self.reactions.add((smiles, f"{smi1} + {smi2}"))
+
+				new_mol.GetAtomWithIdx(a1).SetNoImplicit(True)
+				new_mol.GetAtomWithIdx(a2).SetNoImplicit(True)
+
+				frags = Chem.GetMolFrags(new_mol.GetMol(), asMols=True)
+				frag_smis = sorted([Chem.MolToSmiles(f) for f in frags])
+				if len(frag_smis) == 2:
+					frag1, frag2 = frag_smis
+				elif len(frag_smis) == 1:
+					frag1, frag2 = frag_smis[0], ""
+				else:
+					raise ValueError(f"Too many fragments for {smiles}")
+
+				if count_atom_types(frag1) + count_atom_types(frag2) != count_atom_types(smiles):
+					logging.warning(f"Mismatch atoms' counts for {smiles}; {prod1} {prod2}")
+					return
+
+				self.reactions.add((smiles, " + ".join(frag_smis)))
+
+		logging.info(f"Generated {len(self.reactions)} dissociation reactions.")
 
 	def generate_bond_formation(self):
 		"""Generates bond formation (association) reactions."""
@@ -224,36 +235,41 @@ class ReactionNetwork:
 
 
 if __name__ == "__main__":
+	import argparse
+	import logging
+
 	parser = argparse.ArgumentParser(
 		prog="crn_py",
 	)
 	parser.add_argument("-n", "--max_atoms", type=int, default=2)
 	args = parser.parse_args()
+	
+	logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 	network = ReactionNetwork(max_atoms=args.max_atoms)
 
 	print("Generating molecules...")
 	network.generate_molecules()
+	# print(network.molecules)
 
 	print("Generating bond dissociation reactions...")
 	network.generate_bond_dissociation()
-	print(f"There are {len(network.reactions)} dissociation reactions")
-	print(network.reactions)
-
-	print("Generating rearrangement reactions...")
-	network.generate_bond_formation()
-	network.generate_rearrangements()
-	print(f"There are {len(network.reactions)} reactions")
-
-	print("Generating transfer reactions...")
-	print(network.reactions)
-	network.generate_transfer_reactions()
-	print(f"There are {len(network.reactions)} reactions")
-
-	print("Constructing reaction network graph...")
-	network.construct_graph()
-
-	print(network.reactions)
-
-	network.save_network()
-	network.save_graph_as_png()
+	print(sorted(network.reactions))
+	#
+	# print("Generating rearrangement reactions...")
+	# network.generate_bond_formation()
+	# network.generate_rearrangements()
+	# print(f"There are {len(network.reactions)} reactions")
+	#
+	# print("Generating transfer reactions...")
+	# print(network.reactions)
+	# network.generate_transfer_reactions()
+	# print(f"There are {len(network.reactions)} reactions")
+	#
+	# print("Constructing reaction network graph...")
+	# network.construct_graph()
+	#
+	# print(network.reactions)
+	#
+	# network.save_network()
+	# network.save_graph_as_png()
