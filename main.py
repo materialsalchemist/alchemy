@@ -12,40 +12,46 @@ def count_atom_types(smiles):
 	return Counter([atom.GetSymbol() for atom in mol.GetAtoms()])
 
 class ReactionNetwork:
-	def __init__(self, max_atoms=4, atoms=None):
+	def __init__(self, max_atoms=4, atoms=None, bond_types=None):
 		self.max_atoms = max_atoms
 		self.atoms = atoms if atoms is not None else ["C", "H", "O"]
 		self.heavy_atoms = list(filter(lambda x: x != "H", self.atoms))
+		self.bond_types = bond_types if bond_types is not None else [Chem.BondType.SINGLE, Chem.BondType.DOUBLE, Chem.BondType.AROMATIC]
 		self.molecules = set()
 		self.reactions = set()
 		self.graph = nx.DiGraph()
 
 	def generate_compositions(self):
+		"""Generates all possible atom compositions up to max_atoms, including different bond combinations."""
 		ranges = [range(self.max_atoms + 1)] * len(self.heavy_atoms)
-		return (
-			{ atom: count for atom, count in zip(self.heavy_atoms, composition) if count > 0 }
-			for composition in itertools.product(*ranges) if any(composition)
-		)
-
-	def composition_to_mol(self, composition):
-		mol = Chem.RWMol()
 		
+		for composition in itertools.product(*ranges):
+			if not any(composition):
+				continue
+			
+			atom_count = {atom: count for atom, count in zip(self.heavy_atoms, composition) if count > 0}
+
+			for bond_combo in itertools.combinations_with_replacement(self.bond_types, sum(composition) - 1):
+				yield atom_count, bond_combo
+
+	def composition_to_mol(self, composition, bond_combo):
+		"""Constructs a molecule from atom composition and a given bond combination."""
+		mol = Chem.RWMol()
+
 		atom_indices = {
 			atom: [mol.AddAtom(Chem.Atom(atom)) for _ in range(count)] 
 			for atom, count in composition.items()
 		}
 		
-		# Connect all atoms linearly (naive structure)
 		all_indices = [idx for indices in atom_indices.values() for idx in indices]
-		for i in range(len(all_indices) - 1):
-			mol.AddBond(all_indices[i], all_indices[i + 1], Chem.BondType.SINGLE)
+
+		for i, bond_type in enumerate(bond_combo):
+			mol.AddBond(all_indices[i], all_indices[i + 1], bond_type)
 
 		try:
 			mol.UpdatePropertyCache()
 			Chem.SanitizeMol(mol)
-
 			return mol
-
 		except Exception as e:
 			print("Sanitization failed:", e)
 			return None
@@ -55,10 +61,9 @@ class ReactionNetwork:
 
 		self.molecules.clear()
 
-		for comp in self.generate_compositions():
-			mol = self.composition_to_mol(comp)
+		for comp, bond_combo in self.generate_compositions():
+			mol = self.composition_to_mol(comp, bond_combo)
 			if mol:
-				# self.molecules.add(Chem.MolToSmiles(mol, canonical=True, allHsExplicit=True))
 				smi = Chem.MolToSmiles(mol, canonical=True, allHsExplicit=True)
 				logging.info(f"{comp} -> {smi}")
 				self.molecules.add(smi)
