@@ -1,25 +1,110 @@
-from collections import Counter
 import itertools
 import networkx as nx
 import matplotlib.pyplot as plt
+
 from rdkit import Chem
-from rdkit.Chem import AllChem
+from rdkit.Chem import AllChem, GetPeriodicTable
 from tqdm import tqdm
+import numpy as np
+import numba
+from numba import jit
 
-def count_atom_types(smiles):
-	mol = Chem.MolFromSmiles(smiles, sanitize=True)
-	mol = Chem.rdmolops.AddHs(mol)
-	return Counter([atom.GetSymbol() for atom in mol.GetAtoms()])
+import logging
+from functools import lru_cache, cache
+from dataclasses import dataclass, field
+from typing import Set, List, Tuple, Dict, Optional, FrozenSet
+from collections import Counter
 
+BOND_ORDER_MAPPING = {
+	Chem.BondType.SINGLE: 1.0,
+	Chem.BondType.DOUBLE: 2.0,
+	Chem.BondType.TRIPLE: 3.0,
+	Chem.BondType.AROMATIC: 1.5,
+	Chem.BondType.QUADRUPLE: 4.0,
+	Chem.BondType.QUINTUPLE: 5.0,
+	Chem.BondType.HEXTUPLE: 6.0,
+	Chem.BondType.ONEANDAHALF: 1.5,
+	Chem.BondType.TWOANDAHALF: 2.5,
+	Chem.BondType.THREEANDAHALF: 3.5,
+	Chem.BondType.FOURANDAHALF: 4.5,
+	Chem.BondType.FIVEANDAHALF: 5.5,
+	Chem.BondType.IONIC: 0.5,  # Ionic bonds are not typically represented numerically
+	Chem.BondType.HYDROGEN: 0.1,  # Hydrogen bonds are weak interactions
+	Chem.BondType.THREECENTER: 0.5,  # Approximate, as three-center bonds vary
+	Chem.BondType.DATIVEONE: 1.0,  # Dative bonds typically behave like single bonds
+	Chem.BondType.DATIVE: 1.0,
+	Chem.BondType.DATIVEL: 1.0,
+	Chem.BondType.DATIVER: 1.0,
+	Chem.BondType.OTHER: None,  # Undefined bond type
+	Chem.BondType.ZERO: 0.0,  # No bond
+}
+
+@dataclass(unsafe_hash=True)
 class ReactionNetwork:
-	def __init__(self, max_atoms=4, atoms=None, bond_types=None):
-		self.max_atoms = max_atoms
-		self.atoms = atoms if atoms is not None else ["C", "H", "O"]
-		self.heavy_atoms = list(filter(lambda x: x != "H", self.atoms))
-		self.bond_types = bond_types if bond_types is not None else [Chem.BondType.SINGLE, Chem.BondType.DOUBLE, Chem.BondType.AROMATIC]
-		self.molecules = set()
-		self.reactions = set()
-		self.graph = nx.DiGraph()
+	"""
+	Generates and manages chemical reaction networks using vectorized operations.
+	"""
+
+	max_atoms: int = field(default=4)
+	atoms: FrozenSet[str] = field(default_factory=lambda: frozenset(["C", "H", "O"]))
+	bond_types: FrozenSet[Chem.BondType] = field(default_factory=lambda: frozenset([
+		Chem.BondType.SINGLE,
+		Chem.BondType.DOUBLE,
+		Chem.BondType.TRIPLE,
+		Chem.BondType.AROMATIC,
+		Chem.BondType.QUADRUPLE,
+		Chem.BondType.QUINTUPLE,
+		Chem.BondType.HEXTUPLE,
+		Chem.BondType.ONEANDAHALF,
+		Chem.BondType.TWOANDAHALF,
+		Chem.BondType.THREEANDAHALF,
+		Chem.BondType.FOURANDAHALF,
+		# Chem.BondType.FIVEANDAHALF ,
+		Chem.BondType.AROMATIC,
+		# Chem.BondType.IONIC,
+		# Chem.BondType.HYDROGEN,
+		# Chem.BondType.THREECENTER,
+		# Chem.BondType.DATIVEONE,
+		# Chem.BondType.DATIVE,
+		# Chem.BondType.DATIVEL,
+		# Chem.BondType.DATIVER,
+		# Chem.BondType.OTHER,
+		# Chem.BondType.ZERO,
+	]))
+	
+	molecules: Set[str] = field(init=False, default_factory=set)
+	reactions: Set[Tuple[str, str]] = field(init=False, default_factory=set)
+	graph: nx.DiGraph = field(init=False, default_factory=nx.DiGraph)
+	heavy_atoms: FrozenSet[str] = field(init=False)
+	periodic_table: Chem.rdchem.GetPeriodicTable = field(init=False)
+
+	def __post_init__(self):
+		"""
+		Initialize derived attributes and set up logging after instance creation.
+		"""
+		self.heavy_atoms = frozenset(atom for atom in self.atoms if atom != "H")
+		self.periodic_table = Chem.GetPeriodicTable()
+		self._setup_logging()
+
+	@staticmethod
+	def _setup_logging() -> None:
+		"""
+		Configure logging settings for the reaction network generator.
+		"""
+		logging.basicConfig(
+			level=logging.INFO,
+			format='%(asctime)s - ReactionNetwork::%(levelname)s - %(message)s'
+		)
+
+	@staticmethod
+	@cache
+	def _is_valid_molecule(smiles: str) -> bool:
+		try:
+			mol = Chem.MolFromSmiles(smiles)
+			Chem.SanitizeMol(mol)
+			return True
+		except:
+			return False
 
 	def generate_compositions(self):
 		"""Generates all possible atom compositions up to max_atoms, including different bond combinations."""
@@ -33,6 +118,36 @@ class ReactionNetwork:
 
 			for bond_combo in itertools.combinations_with_replacement(self.bond_types, sum(composition) - 1):
 				yield atom_count, bond_combo
+
+	def get_max_valence(self, atom_symbol: str) -> int:
+		"""Get the maximum valence for an atom using RDKit's periodic table."""
+		atomic_num = self.periodic_table.GetAtomicNumber(atom_symbol)
+		return max(self.periodic_table.GetValenceList(atomic_num))
+	
+	@staticmethod
+	def get_bond_order(bond_type: Chem.BondType) -> float:
+		"""Get the numerical order of a bond type."""
+		return BOND_ORDER_MAPPING.get(bond_type, 1.0)
+
+	def can_form_bond(self, atom1: Chem.Atom, atom2: Chem.Atom, bond_type: Chem.BondType) -> bool:
+		"""Check if two atoms can form a bond of given type based on their valences."""
+		bond_order = self.get_bond_order(bond_type)
+		
+		val1 = self.get_current_valence(atom1)
+		val2 = self.get_current_valence(atom2)
+		max_val1 = self.get_max_valence(atom1.GetSymbol())
+		max_val2 = self.get_max_valence(atom2.GetSymbol())
+		
+		return (
+			val1 + bond_order <= max_val1 and 
+			val2 + bond_order <= max_val2
+		)
+
+	def get_current_valence(self, atom: Chem.Atom) -> int:
+		"""Calculate current valence of an atom including implicit hydrogens."""
+		explicit_valence = sum(bond.GetBondTypeAsDouble() for bond in atom.GetBonds())
+		implicit_h = atom.GetNumImplicitHs()
+		return explicit_valence + implicit_h
 
 	def composition_to_mol(self, composition, bond_combo):
 		"""Constructs a molecule from atom composition and a given bond combination."""
@@ -53,7 +168,7 @@ class ReactionNetwork:
 			Chem.SanitizeMol(mol)
 			return mol
 		except Exception as e:
-			print("Sanitization failed:", e)
+			logging.debug("Sanitization failed:", e)
 			return None
 
 	def generate_molecules(self):
@@ -88,7 +203,7 @@ class ReactionNetwork:
 				new_mol.GetAtomWithIdx(a2).SetNoImplicit(True)
 
 				frags = Chem.GetMolFrags(new_mol.GetMol(), asMols=True)
-				frag_smis = sorted([Chem.MolToSmiles(f) for f in frags])
+				frag_smis = sorted([Chem.MolToSmiles(f, canonical=True, allHsExplicit=True) for f in frags])
 				if len(frag_smis) == 2:
 					frag1, frag2 = frag_smis
 				elif len(frag_smis) == 1:
@@ -96,30 +211,62 @@ class ReactionNetwork:
 				else:
 					raise ValueError(f"Too many fragments for {smiles}")
 
-				if count_atom_types(frag1) + count_atom_types(frag2) != count_atom_types(smiles):
-					logging.warning(f"Mismatch atoms' counts for {smiles}; {prod1} {prod2}")
-					return
-
 				self.reactions.add((smiles, " + ".join(frag_smis)))
 
 		logging.info(f"Generated {len(self.reactions)} dissociation reactions.")
 
 	def generate_bond_formation(self):
-		"""Generates bond formation (association) reactions."""
-
+		"""Generate bond formation reactions with detailed debugging."""
 		new_reactions = set()
+		
+		logging.info("Starting bond formation generation")
+		logging.info(f"Number of molecules: {len(self.molecules)}")
+		
+		for mol1_smi, mol2_smi in itertools.combinations(self.molecules, 2):
+			mol1 = Chem.MolFromSmiles(mol1_smi)
+			mol2 = Chem.MolFromSmiles(mol2_smi)
+			
+			if not (mol1 and mol2):
+				logging.debug(f"Failed to parse molecules: {mol1_smi}, {mol2_smi}")
+				continue
+				
+			logging.debug(f"Attempting combination of {mol1_smi} and {mol2_smi}")
+			combined = Chem.CombineMols(mol1, mol2)
+			num_atoms_mol1 = mol1.GetNumAtoms()
 
-		for mol1, mol2 in itertools.combinations(self.molecules, 2):
-			mol1_obj = Chem.MolFromSmiles(mol1)
-			mol2_obj = Chem.MolFromSmiles(mol2)
+			atoms1 = [(i, combined.GetAtomWithIdx(i)) for i in range(num_atoms_mol1)]
+			atoms2 = [(j, combined.GetAtomWithIdx(j)) for j in range(num_atoms_mol1, combined.GetNumAtoms())]
 
-			if mol1_obj and mol2_obj:
-				merged = Chem.CombineMols(mol1_obj, mol2_obj)
-				if merged and Chem.SanitizeMol(merged, catchErrors=True) == 0:
-					smiles_merged = Chem.MolToSmiles(merged)
-					new_reactions.add((f"{mol1} + {mol2}", smiles_merged))
+			for (i, atom1), (j, atom2) in itertools.product(atoms1, atoms2):
+				atom1_sym = atom1.GetSymbol()
+				atom2_sym = atom2.GetSymbol()
 
+				logging.debug(f"Attempting to bond {atom1_sym}({i}) with {atom2_sym}({j})")
+
+				for bond_type in self.bond_types:
+					if not self.can_form_bond(atom1, atom2, bond_type):
+						logging.debug(f"Valence check failed for {atom1_sym}-{atom2_sym} with bond type {bond_type}")
+						continue
+
+					rwmol = Chem.RWMol(combined)
+					try:
+						rwmol.AddBond(i, j, bond_type)
+						rwmol.UpdatePropertyCache()
+						Chem.SanitizeMol(rwmol)
+
+						product_smi = Chem.MolToSmiles(rwmol, canonical=True)
+						if self._is_valid_molecule(product_smi):
+							reactants = " + ".join(sorted([mol1_smi, mol2_smi]))
+							new_reactions.add((reactants, product_smi))
+							logging.debug(f"Successfully created: {reactants} -> {product_smi}")
+						else:
+							logging.debug(f"Validation failed for product: {product_smi}")
+					except Exception as e:
+						logging.debug(f"Sanitization failed: {str(e)}")
+						continue
+		
 		self.reactions.update(new_reactions)
+		logging.info(f"Generated {len(new_reactions)} valid bond formation reactions")
 
 	def generate_rearrangements(self):
 		"""Generates rearrangement reactions where atoms shift within a molecule."""
@@ -133,20 +280,23 @@ class ReactionNetwork:
 
 			# Swap atom connectivity in a way that keeps valency valid
 			for bond in mol.GetBonds():
+				if bond.IsInRing():
+					continue
+
 				new_mol = Chem.RWMol(mol)
 				a1, a2 = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-
 				new_mol.RemoveBond(a1, a2)
 				new_mol.AddBond(a1, a2, bond.GetBondType())
 				new_mol.UpdatePropertyCache()
-				
+
 				new_mol = new_mol.GetMol()
 				if new_mol and Chem.SanitizeMol(new_mol, catchErrors=True) == 0:
 					rearranged_smiles = Chem.MolToSmiles(new_mol)
 					if rearranged_smiles and rearranged_smiles != smiles:
 						new_reactions.add((smiles, rearranged_smiles))
-		
+
 		self.reactions.update(new_reactions)
+		logging.info(f"Generated {len(new_reactions)} rearrangement reactions.")
 
 	def generate_transfer_reactions(self):
 		"""
@@ -236,12 +386,14 @@ class ReactionNetwork:
 			plt.close()
 			logging.info(f"Reaction network visualization saved as {filename}")
 		except Exception as e:
-			logging.error(f"Error saving visualization to {filename}: {str(e)}")
+			logging.debug(f"Error saving visualization to {filename}: {str(e)}")
 
 
 if __name__ == "__main__":
 	import argparse
-	import logging
+	from rdkit import RDLogger
+
+	RDLogger.DisableLog("rdApp.error")
 
 	parser = argparse.ArgumentParser(
 		prog="crn_py",
@@ -249,20 +401,21 @@ if __name__ == "__main__":
 	parser.add_argument("-n", "--max_atoms", type=int, default=2)
 	args = parser.parse_args()
 	
-	logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 	network = ReactionNetwork(max_atoms=args.max_atoms)
 
 	print("Generating molecules...")
 	network.generate_molecules()
-	# print(network.molecules)
+	print(network.molecules)
 
 	print("Generating bond dissociation reactions...")
 	network.generate_bond_dissociation()
 	print(sorted(network.reactions))
-	#
-	# print("Generating rearrangement reactions...")
-	# network.generate_bond_formation()
+
+	print("Generating bond formation reactions...")
+	network.generate_bond_formation()
+	print(f"There are {len(network.reactions)} reactions")
+
+	# print("Generating rearrangements reactions...")
 	# network.generate_rearrangements()
 	# print(f"There are {len(network.reactions)} reactions")
 	#
