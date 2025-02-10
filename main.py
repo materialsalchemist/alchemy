@@ -1,4 +1,5 @@
 import itertools
+	
 import networkx as nx
 import matplotlib.pyplot as plt
 
@@ -14,6 +15,10 @@ from functools import lru_cache, cache
 from dataclasses import dataclass, field
 from typing import Set, List, Tuple, Dict, Optional, FrozenSet
 from collections import Counter
+
+import threading
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
 BOND_ORDER_MAPPING = {
 	Chem.BondType.SINGLE: 1.0,
@@ -59,30 +64,34 @@ class ReactionNetwork:
 		Chem.BondType.TWOANDAHALF,
 		Chem.BondType.THREEANDAHALF,
 		Chem.BondType.FOURANDAHALF,
-		# Chem.BondType.FIVEANDAHALF ,
+		Chem.BondType.FIVEANDAHALF ,
 		Chem.BondType.AROMATIC,
-		# Chem.BondType.IONIC,
-		# Chem.BondType.HYDROGEN,
-		# Chem.BondType.THREECENTER,
-		# Chem.BondType.DATIVEONE,
-		# Chem.BondType.DATIVE,
-		# Chem.BondType.DATIVEL,
-		# Chem.BondType.DATIVER,
-		# Chem.BondType.OTHER,
+		Chem.BondType.IONIC,
+		Chem.BondType.HYDROGEN,
+		Chem.BondType.THREECENTER,
+		Chem.BondType.DATIVEONE,
+		Chem.BondType.DATIVE,
+		Chem.BondType.DATIVEL,
+		Chem.BondType.DATIVER,
 		# Chem.BondType.ZERO,
+		# Chem.BondType.OTHER,
 	]))
 	
 	molecules: Set[str] = field(init=False, default_factory=set)
 	reactions: Set[Tuple[str, str]] = field(init=False, default_factory=set)
+
 	graph: nx.DiGraph = field(init=False, default_factory=nx.DiGraph)
-	heavy_atoms: FrozenSet[str] = field(init=False)
+	heavy_atoms: List[str] = field(init=False)
 	periodic_table: Chem.rdchem.GetPeriodicTable = field(init=False)
+
+	n_workers: int = field(default=4)
+	_lock: threading.Lock = field(init=False, default_factory=threading.Lock)
 
 	def __post_init__(self):
 		"""
 		Initialize derived attributes and set up logging after instance creation.
 		"""
-		self.heavy_atoms = frozenset(atom for atom in self.atoms if atom != "H")
+		self.heavy_atoms = [atom for atom in self.atoms if atom != "H"]
 		self.periodic_table = Chem.GetPeriodicTable()
 		self._setup_logging()
 
@@ -96,8 +105,12 @@ class ReactionNetwork:
 			format='%(asctime)s - ReactionNetwork::%(levelname)s - %(message)s'
 		)
 
+	def _chunk_iterator(self, iterator, chunk_size):
+		"""Split an iterator into chunks for parallel processing."""
+		iterator = iter(iterator)
+		return iter(lambda: list(itertools.islice(iterator, chunk_size)), [])
+
 	@staticmethod
-	@cache
 	def _is_valid_molecule(smiles: str) -> bool:
 		try:
 			mol = Chem.MolFromSmiles(smiles)
@@ -105,19 +118,6 @@ class ReactionNetwork:
 			return True
 		except:
 			return False
-
-	def generate_compositions(self):
-		"""Generates all possible atom compositions up to max_atoms, including different bond combinations."""
-		ranges = [range(self.max_atoms + 1)] * len(self.heavy_atoms)
-		
-		for composition in itertools.product(*ranges):
-			if not any(composition):
-				continue
-			
-			atom_count = {atom: count for atom, count in zip(self.heavy_atoms, composition) if count > 0}
-
-			for bond_combo in itertools.combinations_with_replacement(self.bond_types, sum(composition) - 1):
-				yield atom_count, bond_combo
 
 	def get_max_valence(self, atom_symbol: str) -> int:
 		"""Get the maximum valence for an atom using RDKit's periodic table."""
@@ -132,9 +132,11 @@ class ReactionNetwork:
 	def can_form_bond(self, atom1: Chem.Atom, atom2: Chem.Atom, bond_type: Chem.BondType) -> bool:
 		"""Check if two atoms can form a bond of given type based on their valences."""
 		bond_order = self.get_bond_order(bond_type)
+		if bond_order is None:
+			return False
 		
-		val1 = self.get_current_valence(atom1)
-		val2 = self.get_current_valence(atom2)
+		val1 = self.get_atom_current_valence(atom1)
+		val2 = self.get_atom_current_valence(atom2)
 		max_val1 = self.get_max_valence(atom1.GetSymbol())
 		max_val2 = self.get_max_valence(atom2.GetSymbol())
 		
@@ -143,11 +145,28 @@ class ReactionNetwork:
 			val2 + bond_order <= max_val2
 		)
 
-	def get_current_valence(self, atom: Chem.Atom) -> int:
+	@staticmethod
+	def get_atom_current_valence(atom: Chem.Atom) -> int:
 		"""Calculate current valence of an atom including implicit hydrogens."""
 		explicit_valence = sum(bond.GetBondTypeAsDouble() for bond in atom.GetBonds())
 		implicit_h = atom.GetNumImplicitHs()
 		return explicit_valence + implicit_h
+
+	def generate_compositions(self):
+		"""Generates all valid compositions of atoms up to max_atoms, ensuring order independence."""
+		atom_list = list(self.heavy_atoms) 
+		compositions_with_bonds = []
+
+		for total_atoms in range(1, self.max_atoms + 1): 
+			for atom_counts in itertools.combinations_with_replacement(atom_list, total_atoms):
+				composition = {atom: atom_counts.count(atom) for atom in atom_list}
+
+				num_bonds = total_atoms - 1  
+
+				for bond_combo in itertools.combinations_with_replacement(self.bond_types, num_bonds):
+					compositions_with_bonds.append((composition, bond_combo))
+
+		return compositions_with_bonds
 
 	def composition_to_mol(self, composition, bond_combo):
 		"""Constructs a molecule from atom composition and a given bond combination."""
@@ -168,69 +187,98 @@ class ReactionNetwork:
 			Chem.SanitizeMol(mol)
 			return mol
 		except Exception as e:
-			logging.debug("Sanitization failed:", e)
+			logging.debug(f"Sanitization failed: {e}")
 			return None
 
-	def generate_molecules(self):
-		"""Systematically generates molecular fragments within the C-H-O subspace."""
-
-		self.molecules.clear()
-
-		for comp, bond_combo in self.generate_compositions():
+	def _process_molecule_chunk(self, chunk):
+		"""Process a chunk of molecule compositions."""
+		local_molecules = set()
+		for comp, bond_combo in chunk:
 			mol = self.composition_to_mol(comp, bond_combo)
 			if mol:
 				smi = Chem.MolToSmiles(mol, canonical=True, allHsExplicit=True)
-				logging.info(f"{comp} -> {smi}")
-				self.molecules.add(smi)
+				if self._is_valid_molecule(smi):
+					local_molecules.add(smi)
+		return local_molecules
 
-		logging.info(f"Generated {len(self.molecules)} molecules.")
+	def generate_molecules(self):
+		"""Generate molecules using parallel processing."""
+		self.molecules.clear()
+		compositions = list(self.generate_compositions())
+		chunk_size = max(1, len(compositions) // (self.n_workers * 4))
+		chunks = list(self._chunk_iterator(compositions, chunk_size))
 
-	def generate_bond_dissociation(self):
-		"""Generates G0 bond dissociation reactions."""
+		with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+			futures = [executor.submit(self._process_molecule_chunk, chunk) 
+					  for chunk in chunks]
 
-		for smiles in tqdm(self.molecules, desc="Generating bond dissociations"):
+			with tqdm(total=len(chunks), desc="Generating molecules") as pbar:
+				for future in concurrent.futures.as_completed(futures):
+					with self._lock:
+						self.molecules.update(future.result())
+					pbar.update(1)
+
+		logging.info(f"Generated {len(self.molecules)} valid molecules")
+
+
+	def _process_dissociation_chunk(self, smiles_chunk):
+		"""Process a chunk of molecules for dissociation reactions."""
+		local_reactions = set()
+		for smiles in smiles_chunk:
 			mol = Chem.MolFromSmiles(smiles)
-			if mol is None:
+			if not mol:
 				continue
 
 			for bond in mol.GetBonds():
 				new_mol = Chem.RWMol(mol)
-
 				a1, a2 = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
 				new_mol.RemoveBond(a1, a2)
 
 				new_mol.GetAtomWithIdx(a1).SetNoImplicit(True)
 				new_mol.GetAtomWithIdx(a2).SetNoImplicit(True)
 
-				frags = Chem.GetMolFrags(new_mol.GetMol(), asMols=True)
-				frag_smis = sorted([Chem.MolToSmiles(f, canonical=True, allHsExplicit=True) for f in frags])
-				if len(frag_smis) == 2:
-					frag1, frag2 = frag_smis
-				elif len(frag_smis) == 1:
-					frag1, frag2 = frag_smis[0], ""
-				else:
-					raise ValueError(f"Too many fragments for {smiles}")
+				try:
+					frags = Chem.GetMolFrags(new_mol, asMols=True, sanitizeFrags=True)
+					frag_smis = sorted(Chem.MolToSmiles(f, canonical=True) for f in frags)
+					if len(frag_smis) == 2:
+						frag1, frag2 = frag_smis
+					elif len(frag_smis) == 1:
+						frag1, frag2 = frag_smis[0], ""
+					else:
+						raise ValueError(f"Too many fragments for {smiles}")
 
-				self.reactions.add((smiles, " + ".join(frag_smis)))
+					local_reactions.add((smiles, " + ".join(frag_smis)))
+				except Exception as e:
+					logging.debug(f"Failed dissociation for {smiles}: {e}")
 
-		logging.info(f"Generated {len(self.reactions)} dissociation reactions.")
+		return local_reactions
 
-	def generate_bond_formation(self):
-		"""Generate bond formation reactions with detailed debugging."""
-		new_reactions = set()
-		
-		logging.info("Starting bond formation generation")
-		logging.info(f"Number of molecules: {len(self.molecules)}")
-		
-		for mol1_smi, mol2_smi in itertools.combinations(self.molecules, 2):
+	def generate_bond_dissociation(self):
+		"""Generate bond dissociation reactions in parallel."""
+		chunks = list(self._chunk_iterator(list(self.molecules), max(1, len(self.molecules) // (self.n_workers * 4))))
+
+		with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+			futures = [executor.submit(self._process_dissociation_chunk, chunk) for chunk in chunks]
+
+			with tqdm(total=len(chunks), desc="Generating dissociations") as pbar:
+				for future in concurrent.futures.as_completed(futures):
+					with self._lock:
+						self.reactions.update(future.result())
+					pbar.update(1)
+
+		logging.info(f"Generated {len(self.reactions)} dissociation reactions")
+
+	def _process_formation_chunk(self, mol_pairs_chunk):
+		"""Process a chunk of molecule pairs for bond formation."""
+		local_reactions = set()
+
+		for mol1_smi, mol2_smi in mol_pairs_chunk:
 			mol1 = Chem.MolFromSmiles(mol1_smi)
 			mol2 = Chem.MolFromSmiles(mol2_smi)
-			
+
 			if not (mol1 and mol2):
-				logging.debug(f"Failed to parse molecules: {mol1_smi}, {mol2_smi}")
 				continue
-				
-			logging.debug(f"Attempting combination of {mol1_smi} and {mol2_smi}")
+
 			combined = Chem.CombineMols(mol1, mol2)
 			num_atoms_mol1 = mol1.GetNumAtoms()
 
@@ -240,8 +288,6 @@ class ReactionNetwork:
 			for (i, atom1), (j, atom2) in itertools.product(atoms1, atoms2):
 				atom1_sym = atom1.GetSymbol()
 				atom2_sym = atom2.GetSymbol()
-
-				logging.debug(f"Attempting to bond {atom1_sym}({i}) with {atom2_sym}({j})")
 
 				for bond_type in self.bond_types:
 					if not self.can_form_bond(atom1, atom2, bond_type):
@@ -254,19 +300,35 @@ class ReactionNetwork:
 						rwmol.UpdatePropertyCache()
 						Chem.SanitizeMol(rwmol)
 
-						product_smi = Chem.MolToSmiles(rwmol, canonical=True)
+						product_smi = Chem.MolToSmiles(rwmol, canonical=True, allHsExplicit=True)
 						if self._is_valid_molecule(product_smi):
 							reactants = " + ".join(sorted([mol1_smi, mol2_smi]))
-							new_reactions.add((reactants, product_smi))
+							local_reactions.add((reactants, product_smi))
 							logging.debug(f"Successfully created: {reactants} -> {product_smi}")
 						else:
 							logging.debug(f"Validation failed for product: {product_smi}")
-					except Exception as e:
-						logging.debug(f"Sanitization failed: {str(e)}")
+					except Exception:
 						continue
-		
-		self.reactions.update(new_reactions)
-		logging.info(f"Generated {len(new_reactions)} valid bond formation reactions")
+
+		return local_reactions
+
+	def generate_bond_formation(self):
+		"""Generate bond formation reactions in parallel."""
+		mol_pairs = list(itertools.permutations(self.molecules, 2))
+		chunk_size = max(1, len(mol_pairs) // (self.n_workers * 4))
+		chunks = list(self._chunk_iterator(mol_pairs, chunk_size))
+
+		with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+			futures = [executor.submit(self._process_formation_chunk, chunk) 
+					  for chunk in chunks]
+
+			with tqdm(total=len(chunks), desc="Generating formations") as pbar:
+				for future in concurrent.futures.as_completed(futures):
+					with self._lock:
+						self.reactions.update(future.result())
+					pbar.update(1)
+
+		logging.info(f"Generated {len(self.reactions)} formation reactions")
 
 	def generate_rearrangements(self):
 		"""Generates rearrangement reactions where atoms shift within a molecule."""
@@ -400,8 +462,8 @@ if __name__ == "__main__":
 	)
 	parser.add_argument("-n", "--max_atoms", type=int, default=2)
 	args = parser.parse_args()
-	
-	network = ReactionNetwork(max_atoms=args.max_atoms)
+
+	network = ReactionNetwork(max_atoms=args.max_atoms, n_workers=12)
 
 	print("Generating molecules...")
 	network.generate_molecules()
