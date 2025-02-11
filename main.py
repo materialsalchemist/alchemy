@@ -65,14 +65,13 @@ class ReactionNetwork:
 		Chem.BondType.THREEANDAHALF,
 		Chem.BondType.FOURANDAHALF,
 		Chem.BondType.FIVEANDAHALF ,
-		Chem.BondType.AROMATIC,
-		Chem.BondType.IONIC,
-		Chem.BondType.HYDROGEN,
+		# Chem.BondType.IONIC,
+		# Chem.BondType.HYDROGEN,
 		Chem.BondType.THREECENTER,
-		Chem.BondType.DATIVEONE,
-		Chem.BondType.DATIVE,
-		Chem.BondType.DATIVEL,
-		Chem.BondType.DATIVER,
+		# Chem.BondType.DATIVEONE,
+		# Chem.BondType.DATIVE,
+		# Chem.BondType.DATIVEL,
+		# Chem.BondType.DATIVER,
 		# Chem.BondType.ZERO,
 		# Chem.BondType.OTHER,
 	]))
@@ -500,7 +499,7 @@ if __name__ == "__main__":
 	print("Generating bond formation reactions...")
 	network.generate_bond_formation()
 	print(f"There are {len(network.reactions)} reactions")
-	print(network.reactions)
+	# print(sorted(network.reactions))
 
 	# print("Generating rearrangements reactions...")
 	# network.generate_rearrangements()
