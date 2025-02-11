@@ -152,6 +152,26 @@ class ReactionNetwork:
 		implicit_h = atom.GetNumImplicitHs()
 		return explicit_valence + implicit_h
 
+	def _deduplicate_reactions(self):
+		"""
+		Remove duplicate reactions by keeping only one if the reactants are identical (even if reordered),
+		but keep all if the reactants are actually different.
+		"""
+		unique_reactions = {}
+
+		for reactants, product in self.reactions:
+			sorted_reactants = " + ".join(sorted(reactants.split(" + ")))
+
+			if product not in unique_reactions:
+				unique_reactions[product] = {sorted_reactants: (reactants, product)}
+			else:
+				if sorted_reactants not in unique_reactions[product]:
+					unique_reactions[product][sorted_reactants] = (reactants, product)
+
+		self.reactions = set(
+			reaction for reactant_dict in unique_reactions.values() for reaction in reactant_dict.values()
+		)
+
 	def generate_compositions(self):
 		"""Generates all valid compositions of atoms up to max_atoms, ensuring order independence."""
 		atom_list = list(self.heavy_atoms) 
@@ -239,7 +259,7 @@ class ReactionNetwork:
 
 				try:
 					frags = Chem.GetMolFrags(new_mol, asMols=True, sanitizeFrags=True)
-					frag_smis = sorted(Chem.MolToSmiles(f, canonical=True) for f in frags)
+					frag_smis = [Chem.MolToSmiles(f, canonical=True, allHsExplicit=True) for f in frags]
 					if len(frag_smis) == 2:
 						frag1, frag2 = frag_smis
 					elif len(frag_smis) == 1:
@@ -302,7 +322,8 @@ class ReactionNetwork:
 
 						product_smi = Chem.MolToSmiles(rwmol, canonical=True, allHsExplicit=True)
 						if self._is_valid_molecule(product_smi):
-							reactants = " + ".join(sorted([mol1_smi, mol2_smi]))
+							reactants = " + ".join([mol1_smi, mol2_smi])
+							# reactants = " + ".join(sorted([mol1_smi, mol2_smi]))
 							local_reactions.add((reactants, product_smi))
 							logging.debug(f"Successfully created: {reactants} -> {product_smi}")
 						else:
@@ -330,6 +351,7 @@ class ReactionNetwork:
 						self.reactions.update(future.result())
 					pbar.update(1)
 
+		self._deduplicate_reactions()
 		logging.info(f"Generated {len(self.reactions)} formation reactions")
 
 	def generate_rearrangements(self):
@@ -478,7 +500,7 @@ if __name__ == "__main__":
 	print("Generating bond formation reactions...")
 	network.generate_bond_formation()
 	print(f"There are {len(network.reactions)} reactions")
-	# print(network.reactions)
+	print(network.reactions)
 
 	# print("Generating rearrangements reactions...")
 	# network.generate_rearrangements()
