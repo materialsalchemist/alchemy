@@ -155,23 +155,23 @@ class ReactionNetwork:
 		return explicit_valence + implicit_h
 
 	def save_to_csv_and_images(self, dir_path):
-		pd.DataFrame(self.molecules).to_csv(f"{dir_path}/molecules.csv")
-		pd.DataFrame(self.reactions).to_csv(f"{dir_path}/reactions.csv")
+		pd.DataFrame(sorted(self.molecules)).to_csv(f"{dir_path}/molecules.csv")
+		pd.DataFrame(sorted(self.reactions)).to_csv(f"{dir_path}/reactions.csv")
 
 		os.makedirs(f"{dir_path}/molecule_images", exist_ok=True)
 		os.makedirs(f"{dir_path}/reaction_images", exist_ok=True)
 
-		for i, smi in enumerate(self.molecules):
+		for i, smi in enumerate(sorted(self.molecules)):
 			Draw.MolsToImage([Chem.MolFromSmiles(smi)]).save(f"{dir_path}/molecule_images/mol_{i}.png")
 
-		for i, (reactants, products) in enumerate(self.reactions):
+		for i, (reactants, products) in enumerate(sorted(self.reactions)):
 			Draw.MolsToImage([Chem.MolFromSmiles(smi) for smi in reactants.split(" + ")]).save(f"{dir_path}/reaction_images/reactions_reactants_{i}.png")
 			Draw.MolsToImage([Chem.MolFromSmiles(smi) for smi in products.split(" + ")]).save(f"{dir_path}/reaction_images/reactions_products_{i}.png")
 	
 	def generate_markdown_from_csv_and_images(self, dir_path):
 		markdown_lines = ["# Reaction Data", "", "| Reactants SMILES | Products SMILES | Reactants | Products |", "|-----------|----------|-----------|-----------|"]
 		
-		for i, (reactants, products) in enumerate(self.reactions):
+		for i, (reactants, products) in enumerate(sorted(self.reactions)):
 			reactants_img = f"reaction_images/reactions_reactants_{i}.png"
 			products_img = f"reaction_images/reactions_products_{i}.png"
 			
@@ -185,7 +185,7 @@ class ReactionNetwork:
 
 		markdown_lines = ["# Molecule Data", "", "| Molecules SMILES | Molecules | ", "|-----------|-----------|"]
 		
-		for i, smi in enumerate(self.molecules):
+		for i, smi in enumerate(sorted(self.molecules)):
 			mol_img = f"molecule_images/mol_{i}.png"
 			mol_md = f'![]({mol_img})'
 			
