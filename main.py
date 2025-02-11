@@ -178,7 +178,7 @@ class ReactionNetwork:
 			reactants_md = f'![]({reactants_img})'
 			products_md = f'![]({products_img})'
 			
-			markdown_lines.append(f"| reactants | products | {reactants_md} | {products_md} |")
+			markdown_lines.append(f"| {reactants} | {products} | {reactants_md} | {products_md} |")
 		
 		with open(f"{dir_path}/reactions.md", "w") as f:
 			f.write("\n".join(markdown_lines))
