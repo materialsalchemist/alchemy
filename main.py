@@ -4,8 +4,11 @@ import networkx as nx
 import matplotlib.pyplot as plt
 
 from rdkit import Chem
-from rdkit.Chem import AllChem, GetPeriodicTable
+from rdkit.Chem import AllChem, GetPeriodicTable, Draw
 from tqdm import tqdm
+
+import os
+import pandas as pd
 import numpy as np
 import numba
 from numba import jit
@@ -150,6 +153,46 @@ class ReactionNetwork:
 		explicit_valence = sum(bond.GetBondTypeAsDouble() for bond in atom.GetBonds())
 		implicit_h = atom.GetNumImplicitHs()
 		return explicit_valence + implicit_h
+
+	def save_to_csv_and_images(self, dir_path):
+		pd.DataFrame(self.molecules).to_csv(f"{dir_path}/molecules.csv")
+		pd.DataFrame(self.reactions).to_csv(f"{dir_path}/reactions.csv")
+
+		os.makedirs(f"{dir_path}/molecule_images", exist_ok=True)
+		os.makedirs(f"{dir_path}/reaction_images", exist_ok=True)
+
+		for i, smi in enumerate(self.molecules):
+			Draw.MolsToImage([Chem.MolFromSmiles(smi)]).save(f"{dir_path}/molecule_images/mol_{i}.png")
+
+		for i, (reactants, products) in enumerate(self.reactions):
+			Draw.MolsToImage([Chem.MolFromSmiles(smi) for smi in reactants.split(" + ")]).save(f"{dir_path}/reaction_images/reactions_reactants_{i}.png")
+			Draw.MolsToImage([Chem.MolFromSmiles(smi) for smi in products.split(" + ")]).save(f"{dir_path}/reaction_images/reactions_products_{i}.png")
+	
+	def generate_markdown_from_csv_and_images(self, dir_path):
+		markdown_lines = ["# Reaction Data", "", "| Reactants SMILES | Products SMILES | Reactants | Products |", "|-----------|----------|-----------|-----------|"]
+		
+		for i, (reactants, products) in enumerate(self.reactions):
+			reactants_img = f"reaction_images/reactions_reactants_{i}.png"
+			products_img = f"reaction_images/reactions_products_{i}.png"
+			
+			reactants_md = f'![]({reactants_img})'
+			products_md = f'![]({products_img})'
+			
+			markdown_lines.append(f"| reactants | products | {reactants_md} | {products_md} |")
+		
+		with open(f"{dir_path}/reactions.md", "w") as f:
+			f.write("\n".join(markdown_lines))
+
+		markdown_lines = ["# Molecule Data", "", "| Molecules SMILES | Molecules | ", "|-----------|-----------|"]
+		
+		for i, smi in enumerate(self.molecules):
+			mol_img = f"molecule_images/mol_{i}.png"
+			mol_md = f'![]({mol_img})'
+			
+			markdown_lines.append(f"| {smi} | {mol_md} |")
+		
+		with open(f"{dir_path}/molecules.md", "w") as f:
+			f.write("\n".join(markdown_lines))
 
 	def _deduplicate_reactions(self):
 		"""
@@ -369,6 +412,35 @@ class ReactionNetwork:
 					continue
 
 				new_mol = Chem.RWMol(mol)
+		# 		a1, a2 = bond.GetBeginAtom(), bond.GetEndAtom()
+		#
+		# 		if a1.GetDegree() > 1 and a2.GetDegree() > 1:
+		# 			# Iterate over neighbors to find possible migration targets
+		# 			for n1 in a1.GetNeighbors():
+		# 				if n1.GetIdx() == a2.GetIdx():
+		# 					continue
+		# 				for n2 in a2.GetNeighbors():
+		# 					if n2.GetIdx() == a1.GetIdx():
+		# 						continue
+		#
+		# 					new_mol = Chem.RWMol(mol)
+		# 					new_mol.RemoveBond(a1.GetIdx(), a2.GetIdx())
+		# 					new_mol.AddBond(a1.GetIdx(), n2.GetIdx(), bond.GetBondType())
+		# 					new_mol.AddBond(a2.GetIdx(), n1.GetIdx(), bond.GetBondType())
+		#
+		# 					try:
+		# 						new_mol.UpdatePropertyCache()
+		# 						Chem.SanitizeMol(new_mol)
+		# 						rearranged_smiles = Chem.MolToSmiles(new_mol, canonical=True, allHsExplicit=True)
+		#
+		# 						if rearranged_smiles and rearranged_smiles != smiles:
+		# 							new_reactions.add((smiles, rearranged_smiles))
+		# 					except Exception as e:
+		# 						logging.debug(f"Sanitization failed for rearranged molecule of {smiles}: {e}")
+		#
+		# self.reactions.update(new_reactions)
+		# logging.info(f"Generated {len(new_reactions)} rearrangement reactions.")
+
 				a1, a2 = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
 				new_mol.RemoveBond(a1, a2)
 				new_mol.AddBond(a1, a2, bond.GetBondType())
@@ -476,9 +548,9 @@ class ReactionNetwork:
 
 if __name__ == "__main__":
 	import argparse
-	from rdkit import RDLogger
-
-	RDLogger.DisableLog("rdApp.error")
+	# from rdkit import RDLogger
+	#
+	# RDLogger.DisableLog("rdApp.error")
 
 	parser = argparse.ArgumentParser(
 		prog="crn_py",
@@ -500,6 +572,9 @@ if __name__ == "__main__":
 	network.generate_bond_formation()
 	print(f"There are {len(network.reactions)} reactions")
 	# print(sorted(network.reactions))
+
+	network.save_to_csv_and_images("examples")
+	network.generate_markdown_from_csv_and_images("examples")
 
 	# print("Generating rearrangements reactions...")
 	# network.generate_rearrangements()
