@@ -314,13 +314,15 @@ class ReactionNetwork:
 
 	def generate_bond_formation(self):
 		"""Generate bond formation reactions in parallel."""
-		mol_pairs = list(itertools.permutations(self.molecules, 2))
+		mol_pairs = list(itertools.product(self.molecules, repeat=2))
 		chunk_size = max(1, len(mol_pairs) // (self.n_workers * 4))
 		chunks = list(self._chunk_iterator(mol_pairs, chunk_size))
 
 		with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
-			futures = [executor.submit(self._process_formation_chunk, chunk) 
-					  for chunk in chunks]
+			futures = [
+				executor.submit(self._process_formation_chunk, chunk) 
+				for chunk in chunks
+			]
 
 			with tqdm(total=len(chunks), desc="Generating formations") as pbar:
 				for future in concurrent.futures.as_completed(futures):
@@ -471,11 +473,12 @@ if __name__ == "__main__":
 
 	print("Generating bond dissociation reactions...")
 	network.generate_bond_dissociation()
-	print(sorted(network.reactions))
+	print(network.reactions)
 
 	print("Generating bond formation reactions...")
 	network.generate_bond_formation()
 	print(f"There are {len(network.reactions)} reactions")
+	# print(network.reactions)
 
 	# print("Generating rearrangements reactions...")
 	# network.generate_rearrangements()
