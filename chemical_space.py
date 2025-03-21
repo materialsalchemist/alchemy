@@ -120,7 +120,7 @@ class ChemicalSpace:
                         [0, 1, 2, 3, 4], repeat=len(composition)
                     ):
                         for possible_radicals in itertools.product(
-                            [0, 1, 2, 3, 4, 5, 6], repeat=len(composition)
+                            [0, 1, 2, 3, 4], repeat=len(composition)
                         ):
                             compositions += [
                                 [
