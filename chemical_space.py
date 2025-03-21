@@ -149,7 +149,6 @@ class ChemicalSpace:
             mol.GetAtomWithIdx(i).SetNumExplicitHs(possible_valence[i])
 
         bonds_index = 0
-        print(">>>>>>>>>>>>>>>possible_bonds", possible_bonds)
         for i in range(len(composition)):
             for j in range(i + 1, len(composition)):
                 if possible_bonds[bonds_index] != Chem.BondType.ZERO:
@@ -157,7 +156,7 @@ class ChemicalSpace:
                     g.add_edge(i, j)
                 bonds_index += 1
 
-        if len(nx.connected_components(g)) > 1:
+        if len(list(nx.connected_components(g))) > 1:
             return None
         try:
             mol.UpdatePropertyCache()
@@ -165,22 +164,20 @@ class ChemicalSpace:
             return mol
         except Exception as e:
             logging.debug(f"Sanitization failed: {e}")
-            print(mol, "is wrong")
+            # print(mol, "is wrong")
             return None
 
     def generate_molecules(self):
         self.molecules.clear()
         compositions = list(self.generate_compositions())
-        unique_compositions = []
         for c in compositions:
             mol = self.composition_to_mol(c[0], c[1], c[2], c[3])
-            print(c)
+            # print(c)
             if mol:
                 smi = Chem.MolToSmiles(mol, canonical=True, allHsExplicit=True)
                 if self._is_valid_molecule(smi):
                     self.molecules.add(smi)
         logging.info(f"Generated {len(self.molecules)} valid molecules")
-        print("unique_compositions", unique_compositions, len(unique_compositions))
 
     def save_molecules_to_csv_and_images(self, dir_path):
         molecules = sorted(self.molecules)
@@ -258,10 +255,10 @@ if __name__ == "__main__":
     d = list(nx.connected_components(g))
     print(d)
 
-    # chemical_space.generate_molecules()
-    # print(chemical_space.molecules)
-    # try:
-    #     os.mkdir(str(args.max_atoms))
-    # except:
-    #     pass
-    # chemical_space.save_molecules_to_csv_and_images(str(args.max_atoms))
+    chemical_space.generate_molecules()
+    print(chemical_space.molecules)
+    try:
+        os.mkdir(str(args.max_atoms))
+    except:
+        pass
+    chemical_space.save_molecules_to_csv_and_images(str(args.max_atoms))
