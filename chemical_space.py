@@ -1,5 +1,4 @@
 import subprocess
-import networkx as nx
 import itertools
 from utilities import Utilities
 import networkx as nx
@@ -138,25 +137,20 @@ class ChemicalSpace:
         self, composition, possible_bonds, possible_valence, possible_radicals
     ):
         """Constructs a molecule from atom composition and a given bond combination."""
-        g = nx.Graph()
-        g.add_nodes_from(range(len(composition)))
-
         mol = Chem.RWMol()
-        for i in range(len(composition)):
-            mol.AddAtom(Chem.Atom(composition[i]))
-            mol.GetAtomWithIdx(i).SetNoImplicit(False)
-            mol.GetAtomWithIdx(i).SetNumRadicalElectrons(possible_radicals[i])
-            mol.GetAtomWithIdx(i).SetNumExplicitHs(possible_valence[i])
+        for i, comp in enumerate(composition):
+            atom = Chem.Atom(comp)
+            atom.SetNoImplicit(False)
+            atom.SetNumRadicalElectrons(possible_radicals[i])
+            atom.SetNumExplicitHs(possible_valence[i])
+            mol.AddAtom(atom)
 
-        bonds_index = 0
-        for i in range(len(composition)):
-            for j in range(i + 1, len(composition)):
-                if possible_bonds[bonds_index] != Chem.BondType.ZERO:
-                    mol.AddBond(i, j, possible_bonds[bonds_index])
-                    g.add_edge(i, j)
-                bonds_index += 1
+        atom_indices = range(len(composition))
+        for (i, j), bond_type in zip(itertools.combinations(atom_indices, 2), possible_bonds):
+            if bond_type != Chem.BondType.ZERO:
+                mol.AddBond(i, j, bond_type)
 
-        if len(list(nx.connected_components(g))) > 1:
+        if len(Chem.rdmolops.GetMolFrags(mol)) > 1:
             return None
         try:
             mol.UpdatePropertyCache()
@@ -170,7 +164,7 @@ class ChemicalSpace:
     def generate_molecules(self):
         self.molecules.clear()
         compositions = list(self.generate_compositions())
-        for c in compositions:
+        for c in tqdm(compositions):
             mol = self.composition_to_mol(c[0], c[1], c[2], c[3])
             # print(c)
             if mol:
@@ -212,9 +206,9 @@ class ChemicalSpace:
 if __name__ == "__main__":
     import argparse
 
-    # from rdkit import RDLogger
-    #
-    # RDLogger.DisableLog("rdApp.error")
+    from rdkit import RDLogger
+    
+    RDLogger.DisableLog("rdApp.error")
 
     parser = argparse.ArgumentParser(
         prog="crn_py",
@@ -245,7 +239,7 @@ if __name__ == "__main__":
     print(Chem.MolToSmiles(m))
     print(Chem.MolToMolBlock(m))
     subprocess.run(
-        ["obabel", "-:" + Chem.MolToSmiles(m), "-h", "--gen3D", "-Otest.xyz"]
+     ["obabel", "-:" + Chem.MolToSmiles(m), "-h", "--gen3D", "-Otest.xyz"]
     )
     subprocess.run(["obabel", "-:" + Chem.MolToSmiles(m), "-Otest.png"])
 
@@ -257,8 +251,8 @@ if __name__ == "__main__":
 
     chemical_space.generate_molecules()
     print(chemical_space.molecules)
-    try:
-        os.mkdir(str(args.max_atoms))
-    except:
-        pass
-    chemical_space.save_molecules_to_csv_and_images(str(args.max_atoms))
+     try:
+         os.mkdir(str(args.max_atoms))
+     except:
+         pass
+     chemical_space.save_molecules_to_csv_and_images(str(args.max_atoms))
