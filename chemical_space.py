@@ -1,3 +1,4 @@
+import math
 import subprocess
 import itertools
 from utilities import Utilities
@@ -17,12 +18,13 @@ from numba import jit
 import logging
 from functools import lru_cache, cache
 from dataclasses import dataclass, field
-from typing import Set, List, Tuple, Dict, Optional, FrozenSet
+from typing import Set, List, Tuple, Dict, Optional, FrozenSet, Iterator
 from collections import Counter
 
 import threading
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from multiprocessing import Pool, cpu_count
 
 BOND_ORDER_MAPPING = {
     Chem.BondType.SINGLE: 1.0,
@@ -47,6 +49,79 @@ BOND_ORDER_MAPPING = {
     Chem.BondType.OTHER: None,  # Undefined bond type
     Chem.BondType.ZERO: 0.0,  # No bond
 }
+
+def _is_valid_molecule(smiles: str) -> bool:
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        Chem.SanitizeMol(mol)
+        return True
+    except:
+        return False
+
+
+def composition_to_mol(
+    composition, possible_bonds, possible_valence, possible_radicals
+):
+    """Constructs a molecule from atom composition and a given bond combination."""
+    mol = Chem.RWMol()
+    for i, comp in enumerate(composition):
+        atom = Chem.Atom(comp)
+        atom.SetNoImplicit(False)
+        atom.SetNumRadicalElectrons(possible_radicals[i])
+        atom.SetNumExplicitHs(possible_valence[i])
+        mol.AddAtom(atom)
+
+    atom_indices = range(len(composition))
+    for (i, j), bond_type in zip(itertools.combinations(atom_indices, 2), possible_bonds):
+        if bond_type != Chem.BondType.ZERO:
+            mol.AddBond(i, j, bond_type)
+
+    if len(Chem.rdmolops.GetMolFrags(mol)) > 1:
+        return None
+
+    try:
+        mol.UpdatePropertyCache()
+        Chem.SanitizeMol(mol)
+        return mol
+    except Exception as e:
+        logging.debug(f"Sanitization failed: {e}")
+        return None
+
+def _process_generate_molecules(c):
+    mol = composition_to_mol(c[0], c[1], c[2], c[3])
+    if not mol:
+        return None
+
+    try:
+        smi = Chem.MolToSmiles(mol, canonical=True, allHsExplicit=True)
+        if not _is_valid_molecule(smi):
+            return None
+    except Exception as e:
+        return None
+    return smi
+
+def _process_generate_molecules_batch(c_batch):
+    valid_smi = []
+    for c in c_batch:
+        if c is None:
+            continue
+        
+        smi = _process_generate_molecules(c)
+        if smi:
+            valid_smi.append(smi)
+    return valid_smi
+
+def batch_generator(source_generator: Iterator, batch_size: int) -> Iterator[List]:
+    """
+    Yields batches of a given size from a source generator.
+    """
+    while True:
+        batch = list(itertools.islice(source_generator, batch_size))
+        
+        if not batch:
+            return
+            
+        yield batch
 
 
 @dataclass(unsafe_hash=True)
@@ -91,87 +166,112 @@ class ChemicalSpace:
         """
         self.heavy_atoms = [atom for atom in self.atoms if atom != "H"]
         self.periodic_table = Chem.GetPeriodicTable()
+        self.allowed_valences = {
+            atom: tuple(self.periodic_table.GetValenceList(atom))
+            for atom in self.atoms
+        }
         Utilities._setup_logging()
 
     @staticmethod
-    def _is_valid_molecule(smiles: str) -> bool:
-        try:
-            mol = Chem.MolFromSmiles(smiles)
-            Chem.SanitizeMol(mol)
-            return True
-        except:
-            return False
+    def n_choose_k(n, k):
+        """Calculates nCk (n choose k) efficiently."""
+        if k < 0 or k > n:
+            return 0
+        if k == 0 or k == n:
+            return 1
+        if k > n // 2:
+            k = n - k # Optimization: C(n, k) = C(n, n-k)
 
-    def generate_compositions(self):
-        """Generates all valid compositions of atoms up to max_atoms, ensuring order independence."""
+        res = 1
+        for i in range(k):
+            res = res * (n - i) // (i + 1)
+        return res
+
+    def count_total_compositions(self) -> int:
+        """
+        Pre-computes the total number of compositions that will be generated
+        """
+        total_count = 0
+        num_heavy_atom_types = len(self.heavy_atoms)
+        num_bond_types = len(self.bond_types)
+        num_valence_options = 5 # 0-4 explicit Hs
+        num_radical_options = 5 # 0-4 radical electrons
+
+        for total_heavy_atoms in range(1, self.max_atoms + 1):
+            # Number of ways to choose 'total_heavy_atoms' from 'num_heavy_atom_types' with replacement (multiset coefficient)
+            # (n + k - 1) choose k, where n = num_heavy_atom_types, k = total_heavy_atoms
+            num_atom_compositions = (
+                self.n_choose_k(num_heavy_atom_types + total_heavy_atoms - 1, total_heavy_atoms)
+            )
+
+            num_potential_bonds = int(total_heavy_atoms * (total_heavy_atoms - 1) / 2)
+            num_bond_combinations = num_bond_types ** num_potential_bonds
+
+            num_valence_combinations = num_valence_options ** total_heavy_atoms
+            num_radical_combinations = num_radical_options ** total_heavy_atoms
+
+            # For each unique atom composition, we multiply by bond, valence, and radical combinations
+            total_count += (
+                num_atom_compositions *
+                num_bond_combinations *
+                num_valence_combinations *
+                num_radical_combinations
+            )
+        return total_count
+
+    def generate_compositions(self) -> Iterator[Tuple]:
+        """Generates compositions as a generator to save memory."""
         atom_list = list(self.heavy_atoms)
-        compositions = []
+        num_valence_options = range(5) # 0-4 explicit Hs
+        num_radical_options = range(5) # 0-4 radical electrons
 
-        for total_atoms in range(1, self.max_atoms + 1):
-            for composition in itertools.combinations_with_replacement(
-                atom_list, total_atoms
-            ):
-                num_bonds = int(len(composition) * (len(composition) - 1) / 2)
-                for possible_bonds in itertools.product(
-                    self.bond_types, repeat=num_bonds
-                ):
-                    for possible_valences in itertools.product(
-                        [0, 1, 2, 3, 4], repeat=len(composition)
-                    ):
-                        for possible_radicals in itertools.product(
-                            [0, 1, 2, 3, 4], repeat=len(composition)
-                        ):
-                            compositions += [
-                                [
-                                    composition,
-                                    possible_bonds,
-                                    possible_valences,
-                                    possible_radicals,
-                                ]
-                            ]
-
-        # compositions += [(("H",), (), ()), (("H", "H"), (Chem.BondType.SINGLE), ())]
-        return compositions
-
-    def composition_to_mol(
-        self, composition, possible_bonds, possible_valence, possible_radicals
-    ):
-        """Constructs a molecule from atom composition and a given bond combination."""
-        mol = Chem.RWMol()
-        for i, comp in enumerate(composition):
-            atom = Chem.Atom(comp)
-            atom.SetNoImplicit(False)
-            atom.SetNumRadicalElectrons(possible_radicals[i])
-            atom.SetNumExplicitHs(possible_valence[i])
-            mol.AddAtom(atom)
-
-        atom_indices = range(len(composition))
-        for (i, j), bond_type in zip(itertools.combinations(atom_indices, 2), possible_bonds):
-            if bond_type != Chem.BondType.ZERO:
-                mol.AddBond(i, j, bond_type)
-
-        if len(Chem.rdmolops.GetMolFrags(mol)) > 1:
-            return None
-        try:
-            mol.UpdatePropertyCache()
-            Chem.SanitizeMol(mol)
-            return mol
-        except Exception as e:
-            logging.debug(f"Sanitization failed: {e}")
-            # print(mol, "is wrong")
-            return None
+        for total_heavy_atoms in range(1, self.max_atoms + 1):
+            for composition_tuple in itertools.combinations_with_replacement(atom_list, total_heavy_atoms):
+                num_potential_bonds = int(len(composition_tuple) * (len(composition_tuple) - 1) / 2)
+                for possible_bonds_tuple in itertools.product(self.bond_types, repeat=num_potential_bonds):
+                    for possible_valences_tuple in itertools.product(num_valence_options, repeat=len(composition_tuple)):
+                        for possible_radicals_tuple in itertools.product(num_radical_options, repeat=len(composition_tuple)):
+                            yield (
+                                composition_tuple,
+                                possible_bonds_tuple,
+                                possible_valences_tuple,
+                                possible_radicals_tuple,
+                            )
 
     def generate_molecules(self):
         self.molecules.clear()
-        compositions = list(self.generate_compositions())
-        for c in tqdm(compositions):
-            mol = self.composition_to_mol(c[0], c[1], c[2], c[3])
-            # print(c)
-            if mol:
-                smi = Chem.MolToSmiles(mol, canonical=True, allHsExplicit=True)
-                if self._is_valid_molecule(smi):
-                    self.molecules.add(smi)
-        logging.info(f"Generated {len(self.molecules)} valid molecules")
+        try:
+            total_compositions = self.count_total_compositions()
+            logging.info(f"Attempting to process a total of {total_compositions:,} mathematical combinations.")
+            if total_compositions > 200_000_000_000:
+                 logging.warning("Total number of combinations is extremely large. This will likely never finish.")
+        except OverflowError:
+            total_compositions = -1
+            logging.error("Total number of combinations is too large to fit in a standard integer. Cannot show progress.")
+
+        compositions = self.generate_compositions()
+
+        # batch_size = 32768
+        batch_size = 131072
+        batches = batch_generator(compositions, batch_size)
+
+        logging.info(f"Starting molecule generation with {self.n_workers} processes...")
+
+        if total_compositions > 0:
+            total_batches = math.ceil(total_compositions / batch_size)
+        else:
+            total_batches = -1
+
+        with Pool(processes=self.n_workers) as pool:
+            iterator = pool.imap_unordered(_process_generate_molecules_batch, batches)
+            progress_bar = tqdm(iterator, total=total_batches, desc="Generating Molecules")
+            for smi_list in progress_bar:
+                if smi_list:
+                    self.molecules.update(smi_list)
+                    progress_bar.set_postfix({"found": f"{len(self.molecules):,}"})
+        # self.molecules = {smi for smi in results if smi is not None}
+
+        logging.info(f"Generated {len(self.molecules):,} valid molecules")
 
     def save_molecules_to_csv_and_images(self, dir_path):
         molecules = sorted(self.molecules)
@@ -251,8 +351,8 @@ if __name__ == "__main__":
 
     chemical_space.generate_molecules()
     print(chemical_space.molecules)
-     try:
-         os.mkdir(str(args.max_atoms))
-     except:
-         pass
-     chemical_space.save_molecules_to_csv_and_images(str(args.max_atoms))
+    try:
+      os.mkdir(str(args.max_atoms))
+    except:
+      pass
+    chemical_space.save_molecules_to_csv_and_images(str(args.max_atoms))
