@@ -67,11 +67,11 @@ def worker_verify_reaction(reaction_tuple_bytes: bytes) -> Optional[str]:
 		r2_can = Chem.MolToSmiles(m2, canonical=True)
 		p_can  = Chem.MolToSmiles(p,  canonical=True)
 		reaction_smarts = f"{r1_can}.{r2_can}>>{p_can}"
-		print(reaction_smarts)
 
 		rxn = rdChemReactions.ReactionFromSmarts(reaction_smarts, useSmiles=True)
 
-		if rxn.Validate()[0] == 0:
+		# rxn.Validate -> tuple(n_warnings, n_errors)
+		if rxn.Validate()[1] == 0:
 			return reaction_smarts
 		else:
 			return None
