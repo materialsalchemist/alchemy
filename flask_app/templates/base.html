@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-T">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>{% block title %}Chemical Data Explorer{% endblock %}</title>
+	<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+	{% block head_extra %}{% endblock %}
+</head>
+<body>
+	<nav>
+		<ul>
+			<li><a href="{{ url_for('molecules_page') }}">Molecules</a></li>
+			<li><a href="{{ url_for('reactions_page') }}">Reactions</a></li>
+		</ul>
+	</nav>
+	<main>
+		{% block content %}{% endblock %}
+	</main>
+	<footer>
+		<p>&copy; 2025 Chemical Data Explorer</p>
+	</footer>
+	{% block scripts_extra %}{% endblock %}
+</body>
+</html>

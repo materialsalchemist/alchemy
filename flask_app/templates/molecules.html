@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block title %}Molecules - Chemical Data Explorer{% endblock %}
+
+{% block content %}
+<h1>Molecule Explorer</h1>
+
+{% if error %}
+	<p class="error">{{ error }}</p>
+{% endif %}
+
+<form method="GET" action="{{ url_for('molecules_page') }}" class="filter-form">
+	<fieldset>
+		<legend>Filter Molecules</legend>
+		<div>
+			<label for="search_smiles">SMILES contains:</label>
+			<input type="text" id="search_smiles" name="search_smiles" value="{{ filters.search_smiles or '' }}">
+		</div>
+		
+		<div>
+			<label>Atom Presence:</label>
+			{% for atom in heavy_atom_columns %}
+			<input type="checkbox" id="has_{{ atom }}" name="has_{{ atom }}" value="true" {% if filters.atom_filters.get('has_' + atom) %}checked{% endif %}>
+			<label for="has_{{ atom }}">{{ atom }}</label>
+			{% endfor %}
+		</div>
+
+		<div>
+			<label for="exclusive_composition">Exclusive Composition (e.g., C_H, O_N):</label>
+			<input type="text" id="exclusive_composition" name="exclusive_composition" value="{{ filters.exclusive_composition or '' }}" placeholder="e.g., C_H or O">
+			<small>Enter heavy atoms separated by underscores (e.g., C_O_N). Only molecules containing exactly these heavy atoms (and optionally H) will be shown.</small>
+		</div>
+		
+		<div>
+			<label for="min_heavy_atoms">Min Heavy Atoms:</label>
+			<input type="number" id="min_heavy_atoms" name="min_heavy_atoms" value="{{ filters.min_heavy_atoms or '' }}" min="0" style="width: 60px;">
+			<label for="max_heavy_atoms">Max Heavy Atoms:</label>
+			<input type="number" id="max_heavy_atoms" name="max_heavy_atoms" value="{{ filters.max_heavy_atoms or '' }}" min="0" style="width: 60px;">
+		</div>
+
+		<button type="submit">Apply Filters</button>
+		<a href="{{ url_for('molecules_page') }}" class="button-link">Clear Filters</a>
+	</fieldset>
+</form>
+
+{% if molecules %}
+<p>Showing {{ molecules|length }} molecule(s).</p>
+<table>
+	<thead>
+		<tr>
+			<th>SMILES</th>
+			{% for col in atom_columns %}
+				{% if col in molecules[0] %} {# Check if column exists in data #}
+					<th>{{ col }}</th>
+				{% endif %}
+			{% endfor %}
+			<th>RDKit Image</th>
+			<th>Open Babel Image</th>
+		</tr>
+	</thead>
+	<tbody>
+		{% for molecule in molecules %}
+		<tr>
+			<td>{{ molecule.SMILES }}</td>
+			{% for col in atom_columns %}
+				 {% if col in molecule %}
+					<td>{{ molecule[col] }}</td>
+				{% endif %}
+			{% endfor %}
+			<td>
+				{% if molecule.SMILES in smiles_to_image_idx %}
+				<img src="{{ url_for('molecule_image', image_type='rdkit', filename='mol_' + smiles_to_image_idx[molecule.SMILES]|string + '.png') }}" 
+					 alt="RDKit image of {{ molecule.SMILES }}" width="100">
+				{% else %}
+				N/A
+				{% endif %}
+			</td>
+			<td>
+				{% if molecule.SMILES in smiles_to_image_idx %}
+				<img src="{{ url_for('molecule_image', image_type='obabel', filename='mol_' + smiles_to_image_idx[molecule.SMILES]|string + '.png') }}"
+					 alt="Open Babel image of {{ molecule.SMILES }}" width="100">
+				{% else %}
+				N/A
+				{% endif %}
+			</td>
+		</tr>
+		{% endfor %}
+	</tbody>
+</table>
+{% elif not error %}
+<p>No molecules match the current filters, or no data loaded.</p>
+{% endif %}
+
+{% endblock %}

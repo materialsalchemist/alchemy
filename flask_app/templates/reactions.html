@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block title %}Reactions - Chemical Data Explorer{% endblock %}
+
+{% block head_extra %}
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<h1>Reaction Network Explorer</h1>
+<div id="reaction-graph-container">
+	<p>Reaction graph will be rendered here using D3.js.</p>
+	<div id="reaction-graph"></div>
+</div>
+
+<script>
+	const reactionDataUrl = "{{ url_for('reaction_network_data') }}";
+</script>
+<script src="{{ url_for('static', filename='js/reaction_viewer.js') }}"></script>
+{% endblock %}

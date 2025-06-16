@@ -290,7 +290,7 @@ class ReactionSpace:
 					G.add_node(product_smarts, type='molecule')
 					G.add_edge(reaction_smarts, product_smarts)
 		
-		graph_data = nx.node_link_data(G, edges="edges")
+		graph_data = nx.node_link_data(G, edges="links")
 		with open(output_json_path, 'w') as f:
 			json.dump(graph_data, f, indent=2)
 			
