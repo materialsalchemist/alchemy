@@ -71,7 +71,7 @@ def worker_verify_reaction(reaction_tuple_bytes: bytes) -> Optional[str]:
 		rxn = rdChemReactions.ReactionFromSmarts(reaction_smarts, useSmiles=True)
 
 		# rxn.Validate -> tuple(n_warnings, n_errors)
-		if rxn.Validate()[1] == 0:
+		if rxn.Validate(silent=False)[1] == 0:
 			return reaction_smarts
 		else:
 			return None
@@ -141,6 +141,25 @@ class ReactionSpace:
 			counts_tuple = tuple(counts[atom] for atom in atom_cols)
 			molecules.append({'SMILES': row['SMILES'], 'counts': counts})
 			lookup_map[counts_tuple].append(row['SMILES'])
+
+		click.secho("Injecting [H] and [H][H] into the reactant pool.", fg="yellow")
+		
+		if 'H' not in atom_cols:
+			click.secho("Warning: No 'H' column in input CSV. Cannot add H/[H]2 reactants.", fg="red")
+		else:
+			h_species_to_add = {'[H]': 1, '[H][H]': 2}
+			
+			for smi, h_count in h_species_to_add.items():
+				if Chem.MolFromSmiles(smi) is None:
+					logging.warning(f"Could not parse hydrogen species SMILES: {smi}. Skipping.")
+					continue
+
+				counts = {atom: 0 for atom in atom_cols}
+				counts['H'] = h_count
+				counts_tuple = tuple(counts[atom] for atom in atom_cols)
+
+				molecules.append({'SMILES': smi, 'counts': counts})
+				lookup_map[counts_tuple].append(smi)
 		
 		reactant_pairs = list(itertools.combinations_with_replacement(range(len(molecules)), 2))
 
