@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from os import cpu_count
 from typing import List, Dict, Tuple, Optional
 from functools import wraps
+import networkx as nx
+import json
 
 # Suppress verbose RDKit logging
 RDLogger.DisableLog('rdApp.*')
@@ -221,7 +223,7 @@ class ReactionSpace:
 
 	def export_to_csv(self, filename: str = "reactions.csv"):
 		"""Exports the final verified reactions from the DB to a CSV file."""
-		click.secho("\n--- Step 3: Exporting Verified Reactions to CSV ---", bold=True)
+		click.secho("\n--- Step 3a: Exporting Verified Reactions to CSV ---", bold=True)
 		
 		db_path = self._db_paths["verified"]
 		output_csv_path = os.path.join(self.output_dir, filename)
@@ -249,11 +251,58 @@ class ReactionSpace:
 		df.to_csv(output_csv_path, index=False)
 		click.secho(f"Successfully exported {len(df)} reactions to {output_csv_path}", fg="green")
 
+	def generate_reaction_network_graph(self, filename: str = "reaction_network.json"):
+		"""Generates a NetworkX graph from verified reactions and saves it as JSON."""
+		click.secho("\n--- Step 3b: Generating Reaction Network Graph (JSON) ---", bold=True)
+
+		db_path = self._db_paths["verified"]
+		output_json_path = os.path.join(self.output_dir, filename)
+
+		if not os.path.exists(db_path):
+			click.secho("Verified reactions database not found. Cannot generate graph.", fg="red")
+			return
+
+		env = lmdb.open(db_path, readonly=True, lock=False)
+		num_reactions = env.stat()['entries']
+
+		if num_reactions == 0:
+			click.secho("No verified reactions to build graph from.", fg="yellow")
+			return
+
+		G = nx.DiGraph()
+		with env.begin() as txn:
+			for key, _ in tqdm(txn.cursor(), total=num_reactions, desc="Building graph"):
+				reaction_smarts = key.decode()
+				reactants_smarts, _, product_smarts = reaction_smarts.partition('>>')
+				
+				# Add reaction node
+				G.add_node(reaction_smarts, type='reaction')
+
+				# Add reactant nodes and edges to reaction node
+				reactant_list = reactants_smarts.split('.')
+				for r_smi in reactant_list:
+					if r_smi: # Ensure not empty string if split results in one
+						G.add_node(r_smi, type='molecule')
+						G.add_edge(r_smi, reaction_smarts)
+				
+				# Add product node and edge from reaction node
+				if product_smarts:
+					G.add_node(product_smarts, type='molecule')
+					G.add_edge(reaction_smarts, product_smarts)
+		
+		graph_data = nx.node_link_data(G, edges="edges")
+		with open(output_json_path, 'w') as f:
+			json.dump(graph_data, f, indent=2)
+			
+		click.secho(f"Successfully generated and saved reaction network graph with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges to {output_json_path}", fg="green")
+
+
 	def explore(self):
-		"""Run the full workflow: find candidates, verify, and export."""
+		"""Run the full workflow: find candidates, verify, export CSV, and export graph."""
 		self.find_reaction_candidates()
 		self.verify_reactions()
 		self.export_to_csv()
+		self.generate_reaction_network_graph()
 
 @click.group(context_settings=dict(help_option_names=['-h', '--help']))
 def cli():
@@ -306,9 +355,17 @@ def verify_reactions(input_csv, output_dir, workers):
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False), default="reaction_space_results", show_default=True, help="Directory containing the reaction databases.")
 @click.option("-f", "--filename", type=str, default="reactions.csv", show_default=True, help="Output CSV filename.")
 def export_csv(output_dir, filename):
-	"""Step 3: Export verified reactions to a single CSV file."""
-	space = ReactionSpace(input_csv="", output_dir=output_dir)
+	"""Step 3a: Export verified reactions to a single CSV file."""
+	space = ReactionSpace(input_csv="", output_dir=output_dir) # input_csv not needed for export
 	space.export_to_csv(filename=filename)
+
+@cli.command()
+@click.option("-o", "--output-dir", type=click.Path(file_okay=False), default="reaction_space_results", show_default=True, help="Directory containing the reaction databases.")
+@click.option("-f", "--filename", type=str, default="reaction_network.json", show_default=True, help="Output JSON filename for the graph.")
+def export_graph(output_dir, filename):
+	"""Step 3b: Generate and save the reaction network as a JSON file."""
+	space = ReactionSpace(input_csv="", output_dir=output_dir) # input_csv not needed for export
+	space.generate_reaction_network_graph(filename=filename)
 
 def main():
 	cli()
