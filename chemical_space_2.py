@@ -15,6 +15,8 @@ from tqdm import tqdm
 import lmdb
 import pickle
 import pandas as pd
+from rdkit.Chem import Draw
+import subprocess
 
 import argparse
 import click
@@ -302,8 +304,146 @@ class ChemicalSpace:
 		cols = ["SMILES"] + [col for col in df.columns if col != "SMILES"]
 		df = df[cols]
 		
+		df = df[cols]
+		
 		df.to_csv(output_csv_path, index=False)
 		click.secho(f"Export complete. There are {len(df)} molecules.", fg="green")
+
+	def _check_obabel_installed(self):
+		"""Checks if Open Babel is installed and executable."""
+		try:
+			# Use -V as it's a common way to get version and confirm installation
+			subprocess.run(["obabel", "-V"], capture_output=True, text=True, check=True)
+		except (subprocess.CalledProcessError, FileNotFoundError):
+			click.secho(
+				"Open Babel (obabel) is not installed or not found in PATH. "
+				"Please install it to use this feature.",
+				fg="red", err=True
+			)
+			raise click.exceptions.Exit(1)
+
+	def _get_all_smiles_from_db(self) -> List[str]:
+		"""Collects all unique SMILES strings from the molecule databases."""
+		click.secho(f"Collecting SMILES from LMDB databases in {self.output_dir}...", bold=True)
+		all_smiles = set()
+		for n in range(1, self.max_atoms + 1):
+			db_path = self._db_paths["molecules"].format(n=n)
+			if not os.path.exists(db_path):
+				logging.info(f"Molecule database for N={n} not found at {db_path}, skipping.")
+				continue
+
+			env = lmdb.open(db_path, readonly=True, lock=False)
+			with env.begin() as txn:
+				num_entries = txn.stat()['entries']
+				if num_entries == 0:
+					logging.info(f"No entries in molecule database for N={n} at {db_path}, skipping.")
+					continue
+				logging.info(f"Reading {num_entries} SMILES from N={n} database...")
+				for smi_key, _ in txn.cursor():
+					all_smiles.add(smi_key.decode())
+			env.close()
+
+		if not all_smiles:
+			click.secho("No molecules found in databases to export.", fg="yellow")
+			return []
+		
+		return sorted(list(all_smiles))
+
+	def export_images(self):
+		"""Exports molecules from DB to PNG (RDKit & OpenBabel)."""
+		self._check_obabel_installed() # OpenBabel is used for one of the image types
+
+		img_dir = os.path.join(self.output_dir, "molecule_images")
+		img_obabel_dir = os.path.join(self.output_dir, "molecule_images_obabel")
+
+		os.makedirs(img_dir, exist_ok=True)
+		os.makedirs(img_obabel_dir, exist_ok=True)
+
+		sorted_smiles = self._get_all_smiles_from_db()
+		if not sorted_smiles:
+			return
+
+		click.secho(f"\nExporting {len(sorted_smiles)} unique molecules as images to {self.output_dir}...", bold=True)
+		
+		total_exported_rdkit = 0
+		total_exported_obabel = 0
+		for i, smi in enumerate(tqdm(sorted_smiles, desc="Exporting images")):
+			mol_filename_base = f"mol_{i}"
+			try:
+				# RDKit PNG
+				rdkit_mol = Chem.MolFromSmiles(smi)
+				if rdkit_mol:
+					Draw.MolsToImage([rdkit_mol]).save(
+						os.path.join(img_dir, f"{mol_filename_base}.png")
+					)
+					total_exported_rdkit +=1
+				else:
+					logging.warning(f"Could not generate RDKit mol for SMILES: {smi} (file: {mol_filename_base}.png)")
+
+				# OpenBabel PNG
+				result_obabel_png = subprocess.run(
+					[
+						"obabel",
+						"-:" + smi,
+						"-O" + os.path.join(img_obabel_dir, f"{mol_filename_base}.png"),
+					],
+					capture_output=True, text=True
+				)
+				if result_obabel_png.returncode == 0:
+					total_exported_obabel +=1
+				else:
+					 logging.error(f"OpenBabel PNG failed for SMILES: {smi} (file: {mol_filename_base}.png). Error: {result_obabel_png.stderr.strip()}")
+			except Exception as e:
+				logging.error(f"Generic error processing SMILES for images: {smi} (file base: {mol_filename_base}). Error: {e}")
+		
+		if total_exported_rdkit > 0 or total_exported_obabel > 0:
+			click.secho(
+				f"\nFinished exporting images. {total_exported_rdkit} RDKit images, "
+				f"{total_exported_obabel} OpenBabel images processed into {self.output_dir}", 
+				fg="green"
+			)
+		else:
+			click.secho("\nNo molecules were processed for image export.", fg="yellow")
+
+	def export_xyz(self):
+		"""Exports molecules from DB to XYZ files using OpenBabel."""
+		self._check_obabel_installed()
+
+		xyz_dir = os.path.join(self.output_dir, "molecule_xyz")
+		os.makedirs(xyz_dir, exist_ok=True)
+
+		sorted_smiles = self._get_all_smiles_from_db()
+		if not sorted_smiles:
+			return
+
+		click.secho(f"\nExporting {len(sorted_smiles)} unique molecules as XYZ files to {xyz_dir}...", bold=True)
+		
+		total_exported = 0
+		for i, smi in enumerate(tqdm(sorted_smiles, desc="Exporting XYZ files")):
+			mol_filename_base = f"mol_{i}"
+			try:
+				# XYZ
+				result_xyz = subprocess.run(
+					[
+						"obabel",
+						"-:" + smi,
+						"-h", 
+						"--gen3D",
+						"-O" + os.path.join(xyz_dir, f"{mol_filename_base}.xyz"),
+					],
+					capture_output=True, text=True
+				)
+				if result_xyz.returncode == 0:
+					total_exported += 1
+				else:
+					logging.error(f"OpenBabel XYZ failed for SMILES: {smi} (file: {mol_filename_base}.xyz). Error: {result_xyz.stderr.strip()}")
+			except Exception as e:
+				logging.error(f"Generic error processing SMILES for XYZ: {smi} (file base: {mol_filename_base}). Error: {e}")
+		
+		if total_exported > 0:
+			click.secho(f"\nFinished exporting XYZ. {total_exported} molecules processed into {xyz_dir}", fg="green")
+		else:
+			click.secho("\nNo molecules were processed for XYZ export.", fg="yellow")
 
 @click.group(context_settings=dict(help_option_names=['-h', '--help']))
 def cli():
@@ -362,9 +502,25 @@ def build_molecules(max_atoms, atoms, workers, output_dir):
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False), default="chemical_space_results", show_default=True, help="Directory containing results.")
 @click.option("-f", "--filename", type=str, default="molecules.csv", show_default=True, help="Output CSV filename.")
 def export_csv(max_atoms, output_dir, filename):
-	"""Stage 3: Export all found molecules to a single CSV file."""
+	"""Stage 3a: Export all found molecules to a single CSV file."""
 	space = ChemicalSpace(max_atoms=max_atoms, output_dir=output_dir)
 	space.export_to_csv(filename=filename)
+
+@cli.command()
+@click.option("-n", "--max-atoms", type=int, default=3, show_default=True, help="Maximum number of heavy atoms in molecules to export images for.")
+@click.option("-o", "--output-dir", type=click.Path(file_okay=False), default="chemical_space_results", show_default=True, help="Directory containing LMDB results and to save images.")
+def export_images(max_atoms, output_dir):
+	"""Stage 3b: Export molecules from LMDB to images (RDKit PNG and OpenBabel PNG)."""
+	space = ChemicalSpace(max_atoms=max_atoms, output_dir=output_dir)
+	space.export_images()
+
+@cli.command()
+@click.option("-n", "--max-atoms", type=int, default=3, show_default=True, help="Maximum number of heavy atoms in molecules to export XYZ files for.")
+@click.option("-o", "--output-dir", type=click.Path(file_okay=False), default="chemical_space_results", show_default=True, help="Directory containing LMDB results and to save XYZ files.")
+def export_xyz(max_atoms, output_dir):
+	"""Stage 3c: Export molecules from LMDB to XYZ coordinate files using OpenBabel."""
+	space = ChemicalSpace(max_atoms=max_atoms, output_dir=output_dir)
+	space.export_xyz()
 
 def main():
 	cli()
