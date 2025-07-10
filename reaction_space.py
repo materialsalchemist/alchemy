@@ -25,7 +25,6 @@ RDLogger.DisableLog('rdApp.*')
 # Worker Functions for multi processes #
 ########################################
 
-# Globals for worker processes to avoid passing large data repeatedly
 _molecule_list = []
 _lookup_map = {}
 _atom_order = []
@@ -65,9 +64,9 @@ def worker_verify_reaction(reaction_tuple_bytes: bytes) -> Optional[str]:
 		m2 = Chem.MolFromSmiles(r2_smi)
 		p = Chem.MolFromSmiles(p_smi)
 		
-		r1_can = Chem.MolToSmiles(m1, canonical=True)
-		r2_can = Chem.MolToSmiles(m2, canonical=True)
-		p_can  = Chem.MolToSmiles(p,  canonical=True)
+		r1_can = Chem.MolToSmiles(m1, canonical=True, allHsExplicit=True)
+		r2_can = Chem.MolToSmiles(m2, canonical=True, allHsExplicit=True)
+		p_can  = Chem.MolToSmiles(p,  canonical=True, allHsExplicit=True)
 		reaction_smarts = f"{r1_can}.{r2_can}>>{p_can}"
 
 		rxn = rdChemReactions.ReactionFromSmarts(reaction_smarts, useSmiles=True)
@@ -275,17 +274,14 @@ class ReactionSpace:
 				reaction_smarts = key.decode()
 				reactants_smarts, _, product_smarts = reaction_smarts.partition('>>')
 				
-				# Add reaction node
 				G.add_node(reaction_smarts, type='reaction')
 
-				# Add reactant nodes and edges to reaction node
 				reactant_list = reactants_smarts.split('.')
 				for r_smi in reactant_list:
-					if r_smi: # Ensure not empty string if split results in one
+					if r_smi:
 						G.add_node(r_smi, type='molecule')
 						G.add_edge(r_smi, reaction_smarts)
 				
-				# Add product node and edge from reaction node
 				if product_smarts:
 					G.add_node(product_smarts, type='molecule')
 					G.add_edge(reaction_smarts, product_smarts)
