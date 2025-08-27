@@ -3,8 +3,8 @@ import click
 import itertools
 from collections import Counter, defaultdict
 import os
-from multiprocessing import Pool, Process, Queue
-from functools import partial
+from multiprocessing import Pool, Process, Queue, Manager
+from functools import partial, wraps
 import lmdb
 import pickle
 from tqdm import tqdm
@@ -13,8 +13,7 @@ from rdkit.Chem import rdChemReactions
 import logging
 from dataclasses import dataclass, field
 from os import cpu_count
-from typing import List, Dict, Tuple, Optional
-from functools import wraps
+from typing import List, Dict, Tuple, Optional, Set
 import networkx as nx
 import json
 
@@ -25,60 +24,206 @@ RDLogger.DisableLog('rdApp.*')
 # Worker Functions for multi processes #
 ########################################
 
-_molecule_list = []
-_lookup_map = {}
-_atom_order = []
+def get_dissociation_fragments(mol_smiles: str) -> Set[Tuple[str, str]]:
+	"""
+	Dissociates a molecule by breaking each bond once to generate G0 reaction fragments.
+	"""
 
-def init_worker_find_candidates(molecules: List[Dict], lookup_map: Dict, atom_order: List[str]):
-	"""Initializes globals for the find_candidates worker pool."""
-	global _molecule_list, _lookup_map, _atom_order
-	_molecule_list = molecules
-	_lookup_map = lookup_map
-	_atom_order = atom_order
-
-def worker_find_candidates(reactant_indices: Tuple[int, int]) -> List[Tuple[str, str, str]]:
-	global _molecule_list, _lookup_map, _atom_order
-	idx1, idx2 = reactant_indices
-	mol1 = _molecule_list[idx1]
-	mol2 = _molecule_list[idx2]
-
-	target_counts = tuple(mol1['counts'][atom] + mol2['counts'][atom] for atom in _atom_order)
-
-	product_candidates_smiles = _lookup_map.get(target_counts, [])
-	
-	reactions = []
-	for p_smiles in product_candidates_smiles:
-		if p_smiles != mol1['SMILES'] and p_smiles != mol2['SMILES']:
-			reactions.append((mol1['SMILES'], mol2['SMILES'], p_smiles))
-			
-	return reactions
-
-def worker_verify_reaction(reaction_tuple_bytes: bytes) -> Optional[str]:
 	try:
-		r1_smi, r2_smi, p_smi = pickle.loads(reaction_tuple_bytes)
+		mol = Chem.MolFromSmiles(mol_smiles)
+		if not mol:
+			return set()
+
+		mol = Chem.AddHs(mol)
+	except Exception:
+		return set()
+
+	fragments = set()
+	bonds = mol.GetBonds()
+	
+	for i in range(len(bonds)):
+		emol = Chem.EditableMol(mol)
 		
-		if any(Chem.MolFromSmiles(s) is None for s in [r1_smi, r2_smi, p_smi]):
+		begin_atom_idx = bonds[i].GetBeginAtomIdx()
+		end_atom_idx = bonds[i].GetEndAtomIdx()
+		
+		emol.RemoveBond(begin_atom_idx, end_atom_idx)
+		
+		fragmented_mol = emol.GetMol()
+		
+		num_frags = len(Chem.GetMolFrags(fragmented_mol))
+		
+		if num_frags == 2:
+			try:
+				frag_mols = Chem.GetMolFrags(fragmented_mol, asMols=True)
+
+				f1_smi = Chem.MolToSmiles(frag_mols[0], canonical=True)
+				f2_smi = Chem.MolToSmiles(frag_mols[1], canonical=True)
+				
+				sorted_frags = tuple(sorted((f1_smi, f2_smi)))
+				fragments.add(sorted_frags)
+			except Exception:
+				continue
+					
+	return fragments
+
+def worker_generate_new_reactions_g1(reaction_pair: Tuple[str, str]) -> List[str]:
+	"""
+	Worker function to generate G1 reactions from pairs of G0 reactions.
+	Implements both transfer and rearrangement reactions as described in the paper.
+	"""
+	r1_str, r2_str = reaction_pair
+
+	try:
+		# Parse reactions: "Parent>>Frag1.Frag2"
+		p1, frags1_str = r1_str.split(">>")
+		p2, frags2_str = r2_str.split(">>")
+		
+		# Split fragments
+		frags1 = sorted(frags1_str.split('.'))
+		frags2 = sorted(frags2_str.split('.'))
+		
+		new_reactions = []
+		
+		# Find common fragments between the two reactions
+		common_frags = set(frags1) & set(frags2)
+		
+		if len(common_frags) == 0:
+			return []
+
+		# Case 1: Rearrangement reaction A -> D
+		# Where A -> B + C and D -> B + C (same products)
+		if p1 != p2 and frags1 == frags2:
+			parents = sorted([p1, p2])
+			reaction_smi = f"{parents[0]}>>{parents[1]}"
+			
+			return [reaction_smi]
+
+		# Case 2: Transfer reaction A + E -> D + C
+		# Where A -> B + C and D -> B + E, B is common
+		if len(common_frags) == 1:
+			common_frag = common_frags.pop()
+			
+			unique_frag1 = next(f for f in frags1 if f != common_frag)
+			unique_frag2 = next(f for f in frags2 if f != common_frag)
+
+			reactants = sorted([p1, unique_frag2])
+			products = sorted([p2, unique_frag1])
+
+			if reactants != products:
+				reactants_str = '.'.join(reactants)
+				products_str = '.'.join(products)
+				reaction_smi = f"{reactants_str}>>{products_str}"
+
+				return [reaction_smi]
+		
+		return new_reactions
+		
+	except Exception:
+		return []
+
+def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_reaction_complexity: int = 3) -> List[str]:
+	"""
+	Worker function to generate higher generation reactions (G2+) from any two reactions.
+	"""
+	r1_str, r2_str = reaction_pair
+	
+	try:
+		r1_reactants_str, r1_products_str = r1_str.split(">>")
+		r2_reactants_str, r2_products_str = r2_str.split(">>")
+		
+		r1_reactants = set(r1_reactants_str.split('.'))
+		r1_products = set(r1_products_str.split('.'))
+		r2_reactants = set(r2_reactants_str.split('.'))
+		r2_products = set(r2_products_str.split('.'))
+		
+		new_reactions = []
+		
+		# Case 1: Product of r1 is reactant of r2
+		shared_r1p_r2r = r1_products & r2_reactants
+		if shared_r1p_r2r:
+			for shared in shared_r1p_r2r:
+				new_reactants = (r1_reactants | (r2_reactants - {shared}))
+				new_products = ((r1_products - {shared}) | r2_products)
+				
+				if new_reactants != new_products and len(new_reactants) <= max_reaction_complexity and len(new_products) <= max_reaction_complexity:
+					reactants_str = '.'.join(sorted(new_reactants))
+					products_str = '.'.join(sorted(new_products))
+					reaction_smi = f"{reactants_str}>>{products_str}"
+
+					new_reactions.append(reaction_smi)
+		
+		# Case 2: Product of r2 is reactant of r1
+		shared_r2p_r1r = r2_products & r1_reactants
+		if shared_r2p_r1r:
+			for shared in shared_r2p_r1r:
+				new_reactants = (r2_reactants | (r1_reactants - {shared}))
+				new_products = ((r2_products - {shared}) | r1_products)
+				
+				if new_reactants != new_products and len(new_reactants) <= max_reaction_complexity and len(new_products) <= max_reaction_complexity:
+					reactants_str = '.'.join(sorted(new_reactants))
+					products_str = '.'.join(sorted(new_products))
+					reaction_smi = f"{reactants_str}>>{products_str}"
+
+					new_reactions.append(reaction_smi)
+		
+		# Case 3: Reactants share species (parallel reactions with common reactant)
+		shared_reactants = r1_reactants & r2_reactants
+		if shared_reactants:
+			for shared in shared_reactants:
+				new_reactants = (r1_reactants - {shared}) | (r2_reactants - {shared}) | {shared}
+				new_products = r1_products | r2_products
+				
+				if new_reactants != new_products and len(new_reactants) <= max_reaction_complexity and len(new_products) <= max_reaction_complexity:
+					reactants_str = '.'.join(sorted(new_reactants))
+					products_str = '.'.join(sorted(new_products))
+					reaction_smi = f"{reactants_str}>>{products_str}"
+
+					new_reactions.append(reaction_smi)
+		
+		return new_reactions
+		
+	except Exception:
+		return []
+
+def worker_verify_reaction(reaction_smi_bytes: bytes) -> Optional[str]:
+	try:
+		reaction_smi = reaction_smi_bytes.decode('utf-8')
+		reactants_str, products_str = reaction_smi.split('>>')
+		
+		reactant_smis = reactants_str.split('.')
+		product_smis = products_str.split('.')
+		
+		all_smis = reactant_smis + product_smis
+		if any(not s or Chem.MolFromSmiles(s) is None for s in all_smis):
 			return None
 
-		m1 = Chem.MolFromSmiles(r1_smi)
-		m2 = Chem.MolFromSmiles(r2_smi)
-		p = Chem.MolFromSmiles(p_smi)
+		reactant_mols = [Chem.MolFromSmiles(s) for s in reactant_smis]
+		product_mols = [Chem.MolFromSmiles(s) for s in product_smis]
+
+		# Use canonical SMILES (without explicit H) for the final key
+		r_cans = sorted([Chem.MolToSmiles(m, canonical=True) for m in reactant_mols])
+		p_cans = sorted([Chem.MolToSmiles(m, canonical=True) for m in product_mols])
+
+		# Skip identity reactions (e.g., A.B>>A.B)
+		if r_cans == p_cans:
+			return None
+			
+		final_reaction_str = f"{'.'.join(r_cans)}>>{'.'.join(p_cans)}"
+
+		r_can_explicit_h = [Chem.MolToSmiles(m, canonical=True, allHsExplicit=True) for m in reactant_mols]
+		p_can_explicit_h = [Chem.MolToSmiles(m, canonical=True, allHsExplicit=True) for m in product_mols]
 		
-		r1_can = Chem.MolToSmiles(m1, canonical=True, allHsExplicit=True)
-		r2_can = Chem.MolToSmiles(m2, canonical=True, allHsExplicit=True)
-		p_can  = Chem.MolToSmiles(p,  canonical=True, allHsExplicit=True)
-		reaction_smarts = f"{r1_can}.{r2_can}>>{p_can}"
+		reaction_smarts_for_validation = f"{'.'.join(sorted(r_can_explicit_h))}>>{'.'.join(sorted(p_can_explicit_h))}"
 
-		rxn = rdChemReactions.ReactionFromSmarts(reaction_smarts, useSmiles=True)
-
-		# rxn.Validate -> tuple(n_warnings, n_errors)
-		if rxn.Validate(silent=False)[1] == 0:
-			return reaction_smarts
+		rxn = rdChemReactions.ReactionFromSmarts(reaction_smarts_for_validation, useSmiles=True)
+		
+		if rxn.Validate(silent=True)[1] == 0:
+			return final_reaction_str
 		else:
 			return None
 			
-	except Exception as e:
-		print(e)
+	except Exception:
 		return None
 
 ######################
@@ -90,6 +235,8 @@ class ReactionSpace:
 	input_csv: str
 	output_dir: str = "reaction_space_results"
 	n_workers: int = field(default_factory=cpu_count)
+	num_generations: int = 2
+	max_reaction_complexity: int = 3
 	
 	_db_paths: Dict[str, str] = field(init=False, default_factory=dict)
 
@@ -120,74 +267,121 @@ class ReactionSpace:
 
 	def find_reaction_candidates(self):
 		"""
-		Find all combinations C_i + C_j = C_k
-		based on atomic composition.
+		Generates reaction candidates using hierarchical generation (G0, G1, G2+) 
+		and writes them directly to an LMDB database.
 		"""
-		click.secho("\n--- Step 1: Finding Reaction Candidates ---", bold=True)
-		
+		click.secho("\n--- Starting Hierarchical Reaction Network Generation ---", bold=True)
+
 		if not os.path.exists(self.input_csv):
 			click.secho(f"Error: Input file not found at {self.input_csv}", fg="red")
 			raise FileNotFoundError
-		
+
 		df = pd.read_csv(self.input_csv)
-		atom_cols = [col for col in df.columns if col != 'SMILES']
-		df[atom_cols] = df[atom_cols].fillna(0).astype(int)
+		initial_molecules = df['SMILES'].tolist()
+		click.secho(f"Loaded {len(initial_molecules)} molecules from {self.input_csv}", fg="green")
+
+		env = lmdb.open(self._db_paths["candidates"], map_size=10**11, writemap=True)
 		
-		click.secho(f"Loaded {len(df)} molecules from {self.input_csv}", fg="green")
+		all_reactions_written = set()
+		current_generation_reactions = []
 
-		molecules = []
-		lookup_map = defaultdict(list)
-		for _, row in df.iterrows():
-			counts = row[atom_cols].to_dict()
-			counts_tuple = tuple(counts[atom] for atom in atom_cols)
-			molecules.append({'SMILES': row['SMILES'], 'counts': counts})
-			lookup_map[counts_tuple].append(row['SMILES'])
+		try:
+			with env.begin(write=True) as txn:
+				# --- Generation 0: Initial Dissociations ---
+				click.secho("\n--- G0: Performing Initial Bond Dissociations ---", bold=True)
+				g0_reactions = []
+				with Pool(self.n_workers) as pool:
+					results = list(tqdm(
+						pool.imap(get_dissociation_fragments, initial_molecules),
+						total=len(initial_molecules),
+						desc="G0: Dissociating"
+					))
 
-		click.secho("Injecting [H] and [H][H] into the reactant pool.", fg="yellow")
-		
-		if 'H' not in atom_cols:
-			click.secho("Warning: No 'H' column in input CSV. Cannot add H/[H]2 reactants.", fg="red")
-		else:
-			h_species_to_add = {'[H]': 1, '[H][H]': 2}
-			
-			for smi, h_count in h_species_to_add.items():
-				if Chem.MolFromSmiles(smi) is None:
-					logging.warning(f"Could not parse hydrogen species SMILES: {smi}. Skipping.")
-					continue
+				for parent_smi, frag_set in zip(initial_molecules, results):
+					for f1, f2 in frag_set:
+						reaction_smi = f"{parent_smi}>>{f1}.{f2}"
+						if reaction_smi not in all_reactions_written:
+							all_reactions_written.add(reaction_smi)
+							g0_reactions.append(reaction_smi)
+							txn.put(reaction_smi.encode('utf-8'), b'G0', overwrite=False)
+				
+				click.secho(f"Generated and stored {len(g0_reactions):,} unique G0 reactions.", fg="green")
+				current_generation_reactions = g0_reactions
 
-				counts = {atom: 0 for atom in atom_cols}
-				counts['H'] = h_count
-				counts_tuple = tuple(counts[atom] for atom in atom_cols)
+				# --- Generation 1: Transfer and Rearrangement Reactions ---
+				if self.num_generations >= 1 and len(current_generation_reactions) >= 2:
+					click.secho(f"\n--- G1: Generating Transfer and Rearrangement Reactions ---", bold=True)
+					
+					reaction_pairs = list(itertools.combinations(current_generation_reactions, 2))
+					g1_reactions = []
 
-				molecules.append({'SMILES': smi, 'counts': counts})
-				lookup_map[counts_tuple].append(smi)
-		
-		reactant_pairs = list(itertools.combinations_with_replacement(range(len(molecules)), 2))
+					with Pool(self.n_workers) as pool:
+						results_iterator = pool.imap_unordered(worker_generate_new_reactions_g1, reaction_pairs, chunksize=1024)
+						
+						for res_list in tqdm(results_iterator, total=len(reaction_pairs), desc="G1: Processing"):
+							for candidate in res_list:
+								if candidate not in all_reactions_written:
+									all_reactions_written.add(candidate)
+									g1_reactions.append(candidate)
+									txn.put(candidate.encode('utf-8'), b'G1', overwrite=False)
+					
+					click.secho(f"Generated and stored {len(g1_reactions):,} unique G1 reactions.", fg="cyan")
+					current_generation_reactions = g1_reactions
 
-		q = Queue(maxsize=self.n_workers * 2)
-		writer = Process(target=self._lmdb_writer, args=(q, self._db_paths["candidates"]))
-		writer.start()
+				# --- Generation 2+: Higher-order reactions ---
+				for gen in range(2, self.num_generations + 1):
+					if len(current_generation_reactions) < 2:
+						click.secho(f"Not enough reactions to generate G{gen}. Stopping.", fg="yellow")
+						break
+					
+					click.secho(f"\n--- G{gen}: Generating Higher-order Reactions ---", bold=True)
+					
+					all_prev_reactions = [r for r in all_reactions_written if r not in set(current_generation_reactions)]
+					if len(all_prev_reactions) == 0:
+						all_prev_reactions = current_generation_reactions
+					
+					reaction_pairs = []
+					for r1 in current_generation_reactions:
+						for r2 in all_prev_reactions:
+							if r1 != r2:
+								reaction_pairs.append((r1, r2))
+					
+					next_gen_reactions = []
+					
+					with Pool(self.n_workers) as pool:
+						partial_worker = partial(
+							worker_generate_higher_gen_reactions,
+							max_reaction_complexity=self.max_reaction_complexity
+						)
 
-		total_saved = 0
-		with Pool(processes=self.n_workers, initializer=init_worker_find_candidates, initargs=(molecules, lookup_map, atom_cols)) as pool:
-			for result_list in tqdm(
-				pool.imap_unordered(worker_find_candidates, reactant_pairs, chunksize=1024),
-				total=len(reactant_pairs),
-				desc="Finding Candidates"
-			):
-				if result_list:
-					for reaction_tuple in result_list:
-						q.put(pickle.dumps(reaction_tuple))
-						total_saved += 1
-		
-		q.put(None)
-		writer.join()
-		click.secho(f"Found and saved {total_saved:,} potential reaction candidates.", fg="green")
+						results_iterator = pool.imap_unordered(partial_worker, reaction_pairs, chunksize=1024)
+						
+						for res_list in tqdm(results_iterator, total=len(reaction_pairs), desc=f"G{gen}: Processing"):
+							for candidate in res_list:
+								if candidate not in all_reactions_written:
+
+									reactants = candidate.split('>>')[0].split('.')
+									products = candidate.split('>>')[1].split('.')
+
+									all_reactions_written.add(candidate)
+									next_gen_reactions.append(candidate)
+									txn.put(candidate.encode('utf-8'), f'G{gen}'.encode(), overwrite=False)
+					
+					click.secho(f"Generated and stored {len(next_gen_reactions):,} unique G{gen} reactions.", fg="cyan")
+					current_generation_reactions = next_gen_reactions
+					
+					if len(next_gen_reactions) == 0:
+						click.secho(f"No new reactions generated at G{gen}. Stopping.", fg="yellow")
+						break
+
+		finally:
+			env.close()
+
+		click.secho(f"\n--- Finalizing ---", bold=True)
+		click.secho(f"Total unique reactions written to database: {len(all_reactions_written):,}")
+		click.secho("Hierarchical reaction network generation complete.", fg="green")
 
 	def verify_reactions(self):
-		"""
-		Step 2: Read candidate reactions from the database and verify them using RDKit.
-		"""
 		click.secho("\n--- Step 2: Verifying Reactions with RDKit ---", bold=True)
 		
 		input_db_path = self._db_paths["candidates"]
@@ -200,25 +394,23 @@ class ReactionSpace:
 
 		if total_tasks == 0:
 			click.secho("No candidates to verify.", fg="yellow")
+			env_in.close()
 			return
 
-		q = Queue(maxsize=self.n_workers * 2)
-		verified_db_path = self._db_paths["verified"]
-		writer_env = lmdb.open(verified_db_path, map_size=10**11, writemap=True)
+		writer_env = lmdb.open(self._db_paths["verified"], map_size=10**11, writemap=True)
 
-		with env_in.begin() as txn, Pool(self.n_workers) as pool, writer_env.begin(write=True) as writer_txn:
-			cursor = txn.cursor()
-			vals = (value for _, value in cursor)
+		with env_in.begin() as txn_in, writer_env.begin(write=True) as txn_out, Pool(self.n_workers) as pool:
+			cursor = txn_in.cursor()
+			reaction_keys = (key for key, _ in cursor)
 			
-			total_verified = 0
-			for result in tqdm(pool.imap_unordered(worker_verify_reaction, vals, chunksize=1024), total=total_tasks, desc="Verifying Reactions"):
+			for result in tqdm(pool.imap_unordered(worker_verify_reaction, reaction_keys, chunksize=1024), total=total_tasks, desc="Verifying Reactions"):
 				if result:
-					key = result.encode()
-					writer_txn.put(key, b'1', overwrite=False)
-					total_verified += 1
+					key = result.encode('utf-8')
+					txn_out.put(key, b'', overwrite=False)
 		
 		click.secho(f"Verified {writer_env.stat()['entries']:,} unique, chemically plausible reactions.", fg="green")
-
+		env_in.close()
+		writer_env.close()
 
 	def export_to_csv(self, filename: str = "reactions.csv"):
 		"""Exports the final verified reactions from the DB to a CSV file."""
@@ -236,19 +428,21 @@ class ReactionSpace:
 
 		if num_reactions == 0:
 			click.secho("No verified reactions to export.", fg="yellow")
+			env.close()
 			return
 
 		reaction_data = []
 		with env.begin() as txn:
 			for key, _ in tqdm(txn.cursor(), total=num_reactions, desc="Exporting to CSV"):
 				reaction_smarts = key.decode()
-				reactants, _, product = reaction_smarts.partition('>>')
-				r1, r2 = reactants.split(".", 1)
-				reaction_data.append({"Reactant1": r1, "Reactant2": r2, "Product": product})
+				reactants, products = reaction_smarts.split('>>')
+				reaction_data.append({"Reactants": reactants, "Products": products})
 
 		df = pd.DataFrame(reaction_data)
 		df.to_csv(output_csv_path, index=False)
 		click.secho(f"Successfully exported {len(df)} reactions to {output_csv_path}", fg="green")
+		env.close()
+
 
 	def generate_reaction_network_graph(self, filename: str = "reaction_network.json"):
 		"""Generates a NetworkX graph from verified reactions and saves it as JSON."""
@@ -320,6 +514,14 @@ def common_options(func):
 		"-w", "--workers", type=int, default=cpu_count(), show_default=True,
 		help="Number of worker processes."
 	)
+	@click.option(
+		"-g", "--generations", type=int, default=2, show_default=True,
+		help="Number of bimolecular reaction generations to run."
+	)
+	@click.option(
+		"-c", "--max-complexity", type=int, default=3, show_default=True,
+		help="Maximum number of reactants/products for higher generation reactions."
+	)
 
 	def wrapper(*args, **kwargs):
 		return func(*args, **kwargs)
@@ -328,21 +530,33 @@ def common_options(func):
 
 @cli.command()
 @common_options
-def explore(input_csv, output_dir, workers):
-	"""Run the full workflow: find, verify, and export reactions."""
-	space = ReactionSpace(input_csv=input_csv, output_dir=output_dir, n_workers=workers)
+def explore(input_csv, output_dir, workers, generations, max_complexity):
+	"""Run the full workflow: find candidates, verify, and export results."""
+	space = ReactionSpace(
+		input_csv=input_csv, 
+		output_dir=output_dir, 
+		n_workers=workers,
+		num_generations=generations,
+		max_reaction_complexity=max_complexity,
+	)
 	space.explore()
 
 @cli.command()
 @common_options
-def find_candidates(input_csv, output_dir, workers):
-	"""Step 1: Find reaction candidates based on atom conservation."""
-	space = ReactionSpace(input_csv=input_csv, output_dir=output_dir, n_workers=workers)
+def find_candidates(input_csv, output_dir, workers, generations, max_complexity):
+	"""Step 1: Generate reaction candidates from initial molecules."""
+	space = ReactionSpace(
+		input_csv=input_csv, 
+		output_dir=output_dir, 
+		n_workers=workers,
+		num_generations=generations,
+		max_reaction_complexity=max_complexity,
+	)
 	space.find_reaction_candidates()
 
 @cli.command()
 @common_options
-def verify_reactions(input_csv, output_dir, workers):
+def verify_reactions(input_csv, output_dir, workers, generations, max_complexity):
 	"""Step 2: Verify candidates from DB using RDKit."""
 	space = ReactionSpace(input_csv=input_csv, output_dir=output_dir, n_workers=workers)
 	space.verify_reactions()
