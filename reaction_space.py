@@ -325,7 +325,7 @@ class ReactionSpace:
 									g1_reactions.append(candidate)
 									txn.put(candidate.encode('utf-8'), b'G1', overwrite=False)
 					
-					click.secho(f"Generated and stored {len(g1_reactions):,} unique G1 reactions.", fg="cyan")
+					click.secho(f"Generated and stored {len(g1_reactions):,} unique G1 reactions.", fg="green")
 					current_generation_reactions = g1_reactions
 
 				# --- Generation 2+: Higher-order reactions ---
@@ -336,16 +336,11 @@ class ReactionSpace:
 					
 					click.secho(f"\n--- G{gen}: Generating Higher-order Reactions ---", bold=True)
 					
-					all_prev_reactions = [r for r in all_reactions_written if r not in set(current_generation_reactions)]
-					if len(all_prev_reactions) == 0:
-						all_prev_reactions = current_generation_reactions
-					
-					reaction_pairs = []
-					for r1 in current_generation_reactions:
-						for r2 in all_prev_reactions:
-							if r1 != r2:
-								reaction_pairs.append((r1, r2))
-					
+					previous_reactions = all_reactions_written - set(current_generation_reactions)
+
+					reaction_pairs = itertools.product(current_generation_reactions, previous_reactions)
+					total_pairs = len(current_generation_reactions) * len(previous_reactions)
+
 					next_gen_reactions = []
 					
 					with Pool(self.n_workers) as pool:
@@ -356,7 +351,7 @@ class ReactionSpace:
 
 						results_iterator = pool.imap_unordered(partial_worker, reaction_pairs, chunksize=1024)
 						
-						for res_list in tqdm(results_iterator, total=len(reaction_pairs), desc=f"G{gen}: Processing"):
+						for res_list in tqdm(results_iterator, total=total_pairs, desc=f"G{gen}: Processing"):
 							for candidate in res_list:
 								if candidate not in all_reactions_written:
 
@@ -367,7 +362,7 @@ class ReactionSpace:
 									next_gen_reactions.append(candidate)
 									txn.put(candidate.encode('utf-8'), f'G{gen}'.encode(), overwrite=False)
 					
-					click.secho(f"Generated and stored {len(next_gen_reactions):,} unique G{gen} reactions.", fg="cyan")
+					click.secho(f"Generated and stored {len(next_gen_reactions):,} unique G{gen} reactions.", fg="green")
 					current_generation_reactions = next_gen_reactions
 					
 					if len(next_gen_reactions) == 0:
