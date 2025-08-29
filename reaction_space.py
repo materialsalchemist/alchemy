@@ -16,6 +16,7 @@ from os import cpu_count
 from typing import List, Dict, Tuple, Optional, Set
 import networkx as nx
 import json
+import math
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module='rxnmapper')
@@ -190,49 +191,72 @@ def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_rea
 	except Exception:
 		return []
 
-def worker_verify_reaction(reaction_smi_bytes: bytes, confidence_threshold: float = 1.0) -> List[str]:
-	rxn_mapper = RXNMapper()
+rxn_mapper_instance = None
+
+def worker_verify_reaction_batch(
+	reaction_smi_bytes_batch: List[bytes], 
+	confidence_threshold: float = 0.99
+) -> List[str]:
+	"""
+	Worker function to verify a BATCH of reaction SMILES.
+	Initializes the RXNMapper model only once per process.
+	"""
+	global rxn_mapper_instance
+
+	if rxn_mapper_instance is None:
+		rxn_mapper_instance = RXNMapper()
+
+	valid_reactions = []
+	reactions_to_map = []
+	original_reactions_map = {}
+
+	for reaction_smi_bytes in reaction_smi_bytes_batch:
+		try:
+			reaction_smi = reaction_smi_bytes.decode('utf-8')
+			reactants_str, products_str = reaction_smi.split('>>')
+			reactant_mols = [Chem.MolFromSmiles(s) for s in reactants_str.split('.')]
+			product_mols = [Chem.MolFromSmiles(s) for s in products_str.split('.')]
+
+			if any(m is None for m in reactant_mols + product_mols):
+				continue
+			
+			r_cans = sorted([Chem.MolToSmiles(m, canonical=True) for m in reactant_mols])
+			p_cans = sorted([Chem.MolToSmiles(m, canonical=True) for m in product_mols])
+
+			if r_cans == p_cans:
+				continue
+
+			final_canonical_reaction = f"{'.'.join(r_cans)}>>{'.'.join(p_cans)}"
+			original_reactions_map[reaction_smi] = final_canonical_reaction
+			reactions_to_map.append(reaction_smi)
+		except Exception as e:
+			print(e)
+			continue
+	
+	if not reactions_to_map:
+		return []
 
 	try:
-		reaction_smi = reaction_smi_bytes.decode('utf-8')
-		reactants_str, products_str = reaction_smi.split('>>')
+		results = rxn_mapper_instance.get_attention_guided_atom_maps(reactions_to_map)
 
-		reactant_smis = reactants_str.split('.')
-		product_smis = products_str.split('.')
+		for original_smi, result in zip(reactions_to_map, results):
+			confidence = result.get('confidence', 0.0)
+			mapped_rxn = result.get('mapped_rxn', "")
 
-		all_smis = reactant_smis + product_smis
-		if any(not s or Chem.MolFromSmiles(s) is None for s in all_smis):
-			return None
-
-		reactant_mols = [Chem.MolFromSmiles(s) for s in reactant_smis]
-		product_mols = [Chem.MolFromSmiles(s) for s in product_smis]
-
-		r_cans = sorted([Chem.MolToSmiles(m, canonical=True) for m in reactant_mols])
-		p_cans = sorted([Chem.MolToSmiles(m, canonical=True) for m in product_mols])
-
-		if r_cans == p_cans:
-			return None
-
-		final_canonical_reaction = f"{'.'.join(r_cans)}>>{'.'.join(p_cans)}"
-
-	except Exception:
-		return None
-
-	try:
-		result = rxn_mapper.get_attention_guided_atom_maps([reaction_smi])[0]
-
-		if result and result.get('confidence', 0.0) >= confidence_threshold:
-			return final_canonical_reaction
-		
-		return None
+			if confidence >= confidence_threshold:
+				canonical_form = original_reactions_map.get(original_smi)
+				if canonical_form:
+					valid_reactions.append(canonical_form)
 
 	except Exception as e:
 		logging.warning(f"rxnmapper failed for a batch: {e}")
 
+	return valid_reactions
 
-######################
+
+#######################
 # ReactionSpace Class #
-######################
+#######################
 
 @dataclass
 class ReactionSpace:
@@ -250,29 +274,72 @@ class ReactionSpace:
 		os.makedirs(db_dir, exist_ok=True)
 		
 		self._db_paths = {
-			"candidates": os.path.join(db_dir, "reaction_candidates.lmdb"),
+			"candidates_g0": os.path.join(db_dir, "reaction_candidates_g0.lmdb"),
+			"candidates_g1": os.path.join(db_dir, "reaction_candidates_g1.lmdb"),
+			"candidates_g2plus": os.path.join(db_dir, "reaction_candidates_g{gen}_c{max_c}.lmdb"),
 			"verified": os.path.join(db_dir, "verified_reactions.lmdb"),
 		}
 		logging.info(f"ReactionSpace initialized. Results will be saved in '{self.output_dir}'")
 
-	def _lmdb_writer(self, q: Queue, db_path: str):
-		"""A process that listens on a queue and writes data to an LMDB database."""
-		env = lmdb.open(db_path, map_size=10**11, writemap=True, metasync=False, sync=False)
-		count = 0
-		with env.begin(write=True) as txn:
-			while True:
-				item = q.get()
-				if item is None:
-					break
-				# Use a unique key for each entry
-				key = f"{count:012d}".encode()
-				txn.put(key, item, overwrite=False)
-				count += 1
+	def _lmdb_writer(self, q: Queue, db_path: str, batch_size: int = 4096):
+		"""A process that listens on a queue and writes data to an LMDB database in batches."""
+		env = lmdb.open(
+			db_path,
+			map_size=10**11,
+			writemap=True,
+			metasync=False,
+			sync=False,
+		)
+		batch = {}
+		while True:
+			item = q.get()
+			if item is None:
+				break
+			key, val = item
+			batch[key] = val
+			if len(batch) >= batch_size:
+				with env.begin(write=True) as txn:
+					for k, v in batch.items():
+						txn.put(k, v, overwrite=False)
+				batch.clear()
+		# final flush
+		if batch:
+			with env.begin(write=True) as txn:
+				for k, v in batch.items():
+					txn.put(k, v, overwrite=False)
+
+	def _lmdb_batch_iterator(self, db_paths: List[str], batch_size: int):
+		"""
+		A generator that streams keys from multiple LMDB databases and yields them in batches.
+		"""
+		batch = []
+
+		seen_keys = set()
+		for db_path in db_paths:
+			if not os.path.exists(db_path):
+				continue
+			
+			env = lmdb.open(db_path, readonly=True, lock=False)
+			with env.begin() as txn:
+				cursor = txn.cursor()
+				for key, _ in cursor:
+					if key not in seen_keys:
+						seen_keys.add(key)
+						batch.append(key)
+
+						if len(batch) >= batch_size:
+							yield batch
+							batch = []
+
+			env.close()
+		
+		if batch:
+			yield batch
 
 	def find_reaction_candidates(self):
 		"""
-		Generates reaction candidates using hierarchical generation (G0, G1, G2+) 
-		and writes them directly to an LMDB database.
+		Generates reaction candidates using hierarchical generation (G0, G1, G2+)
+		and writes them to generation-specific LMDB databases.
 		"""
 		click.secho("\n--- Starting Hierarchical Reaction Network Generation ---", bold=True)
 
@@ -284,131 +351,187 @@ class ReactionSpace:
 		initial_molecules = df['SMILES'].tolist()
 		click.secho(f"Loaded {len(initial_molecules)} molecules from {self.input_csv}", fg="green")
 
-		env = lmdb.open(self._db_paths["candidates"], map_size=10**11, writemap=True)
-		
 		all_reactions_written = set()
-		current_generation_reactions = []
+		
+		def read_keys_from_db(db_path):
+			if not os.path.exists(db_path): return []
+			env = lmdb.open(db_path, readonly=True, lock=False)
+			with env.begin() as txn:
 
-		try:
-			with env.begin(write=True) as txn:
-				# --- Generation 0: Initial Dissociations ---
-				click.secho("\n--- G0: Performing Initial Bond Dissociations ---", bold=True)
-				g0_reactions = []
-				with Pool(self.n_workers) as pool:
-					results = list(tqdm(
-						pool.imap(get_dissociation_fragments, initial_molecules),
-						total=len(initial_molecules),
-						desc="G0: Dissociating"
-					))
+				keys = [key.decode('utf-8') for key, _ in txn.cursor()]
 
-				for parent_smi, frag_set in zip(initial_molecules, results):
+			env.close()
+			return keys
+
+		# --- Generation 0: Initial Dissociations ---
+		click.secho("\n--- G0: Performing Initial Bond Dissociations ---", bold=True)
+		g0_db_path = self._db_paths["candidates_g0"]
+		if os.path.exists(g0_db_path):
+			click.secho(f"Skipping G0, database already exists.", fg='green')
+			g0_reactions = read_keys_from_db(g0_db_path)
+		else:
+			q = Queue(maxsize=self.n_workers * 2)
+			writer = Process(target=self._lmdb_writer, args=(q, g0_db_path))
+			writer.start()
+
+			g0_reactions = []
+			with Pool(self.n_workers) as pool:
+				results_iterator = pool.imap(get_dissociation_fragments, initial_molecules)
+
+				for parent_smi, frag_set in tqdm(zip(initial_molecules, results_iterator), total=len(initial_molecules), desc="G0: Dissociating"):
 					for f1, f2 in frag_set:
 						reaction_smi = f"{parent_smi}>>{f1}.{f2}"
+
 						if reaction_smi not in all_reactions_written:
 							all_reactions_written.add(reaction_smi)
 							g0_reactions.append(reaction_smi)
-							txn.put(reaction_smi.encode('utf-8'), b'G0', overwrite=False)
-				
-				click.secho(f"Generated and stored {len(g0_reactions):,} unique G0 reactions.", fg="green")
-				current_generation_reactions = g0_reactions
+							q.put((reaction_smi.encode('utf-8'), b'G0'))
 
-				# --- Generation 1: Transfer and Rearrangement Reactions ---
-				if self.num_generations >= 1 and len(current_generation_reactions) >= 2:
-					click.secho(f"\n--- G1: Generating Transfer and Rearrangement Reactions ---", bold=True)
+			q.put(None)
+			writer.join()
+
+		click.secho(f"Found {len(g0_reactions):,} unique G0 reactions.", fg="green")
+		all_reactions_written.update(g0_reactions)
+		current_generation_reactions = g0_reactions
+
+		# --- Generation 1: Transfer and Rearrangement Reactions ---
+		if self.num_generations >= 1:
+			click.secho(f"\n--- G1: Generating Transfer and Rearrangement Reactions ---", bold=True)
+			g1_db_path = self._db_paths["candidates_g1"]
+			if os.path.exists(g1_db_path):
+				click.secho(f"Skipping G1, database already exists.", fg='green')
+				g1_reactions = read_keys_from_db(g1_db_path)
+			else:
+				if len(current_generation_reactions) < 2:
+					 click.secho("Not enough G0 reactions to generate G1. Skipping.", fg="yellow")
+					 g1_reactions = []
+				else:
+					reaction_pairs = itertools.combinations(current_generation_reactions, 2)
+					total_pairs = math.comb(len(current_generation_reactions), 2)
 					
-					reaction_pairs = list(itertools.combinations(current_generation_reactions, 2))
-					g1_reactions = []
+					q = Queue(maxsize=self.n_workers * 2)
+					writer = Process(target=self._lmdb_writer, args=(q, g1_db_path))
+					writer.start()
 
+					g1_reactions = []
 					with Pool(self.n_workers) as pool:
 						results_iterator = pool.imap_unordered(worker_generate_new_reactions_g1, reaction_pairs, chunksize=1024)
-						
-						for res_list in tqdm(results_iterator, total=len(reaction_pairs), desc="G1: Processing"):
+
+						for res_list in tqdm(results_iterator, total=total_pairs, desc="G1: Processing"):
 							for candidate in res_list:
 								if candidate not in all_reactions_written:
 									all_reactions_written.add(candidate)
 									g1_reactions.append(candidate)
-									txn.put(candidate.encode('utf-8'), b'G1', overwrite=False)
-					
-					click.secho(f"Generated and stored {len(g1_reactions):,} unique G1 reactions.", fg="green")
-					current_generation_reactions = g1_reactions
+									q.put((candidate.encode('utf-8'), b'G1'))
 
-				# --- Generation 2+: Higher-order reactions ---
-				for gen in range(2, self.num_generations + 1):
-					if len(current_generation_reactions) < 2:
-						click.secho(f"Not enough reactions to generate G{gen}. Stopping.", fg="yellow")
-						break
-					
-					click.secho(f"\n--- G{gen}: Generating Higher-order Reactions ---", bold=True)
-					
-					previous_reactions = all_reactions_written - set(current_generation_reactions)
+					q.put(None)
+					writer.join()
 
-					reaction_pairs = itertools.product(current_generation_reactions, previous_reactions)
-					total_pairs = len(current_generation_reactions) * len(previous_reactions)
+			click.secho(f"Found {len(g1_reactions):,} unique G1 reactions.", fg="green")
+			all_reactions_written.update(g1_reactions)
+			current_generation_reactions = g1_reactions
 
-					next_gen_reactions = []
-					
-					with Pool(self.n_workers) as pool:
-						partial_worker = partial(
-							worker_generate_higher_gen_reactions,
-							max_reaction_complexity=self.max_reaction_complexity
-						)
+		# --- Generation 2+: Higher-order reactions ---
+		for gen in range(2, self.num_generations + 1):
+			max_c = gen + 1
 
-						results_iterator = pool.imap_unordered(partial_worker, reaction_pairs, chunksize=1024)
-						
-						for res_list in tqdm(results_iterator, total=total_pairs, desc=f"G{gen}: Processing"):
-							for candidate in res_list:
-								if candidate not in all_reactions_written:
+			click.secho(f"\n--- G{gen}: Generating Higher-order Reactions (max_complexity={self.max_reaction_complexity}) ---", bold=True)
+			g2plus_db_path = self._db_paths["candidates_g2plus"].format(gen=gen, max_c=min(max_c, self.max_reaction_complexity))
 
-									reactants = candidate.split('>>')[0].split('.')
-									products = candidate.split('>>')[1].split('.')
+			if os.path.exists(g2plus_db_path):
+				click.secho(f"Skipping G{gen}, database already exists.", fg='green')
+				next_gen_reactions = read_keys_from_db(g2plus_db_path)
+			else:
+				if len(current_generation_reactions) < 1:
+					click.secho(f"Not enough reactions from previous generation to generate G{gen}. Stopping.", fg="yellow")
+					break
+				
+				previous_reactions = list(all_reactions_written - set(current_generation_reactions))
+				if not previous_reactions:
+					click.secho(f"No previous reactions to combine with for G{gen}. Stopping.", fg="yellow")
+					break
+				
+				reaction_pairs = itertools.product(current_generation_reactions, previous_reactions)
+				total_pairs = len(current_generation_reactions) * len(previous_reactions)
+				
+				q = Queue(maxsize=self.n_workers * 2)
+				writer = Process(target=self._lmdb_writer, args=(q, g2plus_db_path))
+				writer.start()
 
-									all_reactions_written.add(candidate)
-									next_gen_reactions.append(candidate)
-									txn.put(candidate.encode('utf-8'), f'G{gen}'.encode(), overwrite=False)
-					
-					click.secho(f"Generated and stored {len(next_gen_reactions):,} unique G{gen} reactions.", fg="green")
-					current_generation_reactions = next_gen_reactions
-					
-					if len(next_gen_reactions) == 0:
-						click.secho(f"No new reactions generated at G{gen}. Stopping.", fg="yellow")
-						break
+				next_gen_reactions = []
+				with Pool(self.n_workers) as pool:
+					partial_worker = partial(worker_generate_higher_gen_reactions, max_reaction_complexity=self.max_reaction_complexity)
+					results_iterator = pool.imap_unordered(partial_worker, reaction_pairs, chunksize=1024)
 
-		finally:
-			env.close()
+					for res_list in tqdm(results_iterator, total=total_pairs, desc=f"G{gen}: Processing"):
+						for candidate in res_list:
+							if candidate not in all_reactions_written:
+								all_reactions_written.add(candidate)
+								next_gen_reactions.append(candidate)
+								q.put((candidate.encode('utf-8'), f'G{gen}'.encode()))
+
+				q.put(None)
+				writer.join()
+
+			click.secho(f"Found {len(next_gen_reactions):,} unique G{gen} reactions.", fg="green")
+			if not next_gen_reactions:
+				click.secho(f"No new reactions generated at G{gen}. Stopping.", fg="yellow")
+				break
+
+			all_reactions_written.update(next_gen_reactions)
+			current_generation_reactions = next_gen_reactions
 
 		click.secho(f"\n--- Finalizing ---", bold=True)
-		click.secho(f"Total unique reactions written to database: {len(all_reactions_written):,}")
+		click.secho(f"Total unique reaction candidates considered: {len(all_reactions_written):,}")
 		click.secho("Hierarchical reaction network generation complete.", fg="green")
 
 	def verify_reactions(self):
-		click.secho("\n--- Step 2: Verifying Reactions with RDKit ---", bold=True)
+		click.secho("\n--- Step 2: Verifying Reactions with RXNMapper ---", bold=True)
 		
-		input_db_path = self._db_paths["candidates"]
-		if not os.path.exists(input_db_path):
-			click.secho(f"Candidate database not found. Please run 'find-candidates' first.", fg="red")
-			return
+		candidate_db_paths = []
 
-		env_in = lmdb.open(input_db_path, readonly=True, lock=False)
-		total_tasks = env_in.stat()['entries']
+		g0_path = self._db_paths["candidates_g0"]
+		if os.path.exists(g0_path):
+			candidate_db_paths.append(g0_path)
 
-		if total_tasks == 0:
-			click.secho("No candidates to verify.", fg="yellow")
-			env_in.close()
+		if self.num_generations >= 1:
+			g1_path = self._db_paths["candidates_g1"]
+			if os.path.exists(g1_path):
+				candidate_db_paths.append(g1_path)
+
+		for gen in range(2, self.num_generations + 1):
+			max_c = gen + 1
+			db_path = self._db_paths["candidates_g2plus"].format(gen=gen, max_c=min(max_c, self.max_reaction_complexity))
+			if os.path.exists(db_path):
+				candidate_db_paths.append(db_path)
+
+		total_candidates = 0
+		for db_path in candidate_db_paths:
+			if os.path.exists(db_path):
+				env = lmdb.open(db_path, readonly=True, lock=False)
+				total_candidates += env.stat()['entries']
+				env.close()
+
+		if total_candidates == 0:
+			click.secho("No candidates to verify. Please run 'find-candidates' first with the appropriate settings.", fg="yellow")
 			return
+		
+		click.secho(f"Found {total_candidates:,} total candidates to verify from specified databases.", fg="green")
+		
+		batch_size = 256
+		batch_generator = self._lmdb_batch_iterator(candidate_db_paths, batch_size)
+		total_batches = math.ceil(total_candidates / batch_size)
 
 		writer_env = lmdb.open(self._db_paths["verified"], map_size=10**11, writemap=True)
 
-		with env_in.begin() as txn_in, writer_env.begin(write=True) as txn_out, Pool(self.n_workers) as pool:
-			cursor = txn_in.cursor()
-			reaction_keys = (key for key, _ in cursor)
-			
-			for result in tqdm(pool.imap_unordered(worker_verify_reaction, reaction_keys, chunksize=1024), total=total_tasks, desc="Verifying Reactions"):
-				if result:
-					key = result.encode('utf-8')
-					txn_out.put(key, b'', overwrite=False)
+		with writer_env.begin(write=True) as txn_out, Pool(self.n_workers) as pool:
+			for verified_batch in tqdm(pool.imap_unordered(worker_verify_reaction_batch, batch_generator), total=total_batches, desc="Verifying Batches"):
+				for result_smi in verified_batch:
+					if result_smi:
+						key = result_smi.encode('utf-8')
+						txn_out.put(key, b'', overwrite=False)
 		
-		click.secho(f"Verified {writer_env.stat()['entries']:,} unique, chemically plausible reactions.", fg="green")
-		env_in.close()
+		click.secho(f"Verified and saved {writer_env.stat()['entries']:,} unique, chemically plausible reactions.", fg="green")
 		writer_env.close()
 
 	def export_to_csv(self, filename: str = "reactions.csv"):
@@ -501,8 +624,8 @@ def common_options(func):
 	@wraps(func)
 	@click.option(
 		"-i", "--input-csv", type=click.Path(exists=True, dir_okay=False),
-	   default="chemical_space_results/molecules.csv", show_default=True,
-	   help="Input CSV file with molecules and atom counts.",
+		 default="chemical_space_results/molecules.csv", show_default=True,
+		 help="Input CSV file with molecules and atom counts.",
 	 )
 	@click.option(
 		"-o", "--output-dir", type=click.Path(file_okay=False),
@@ -557,7 +680,13 @@ def find_candidates(input_csv, output_dir, workers, generations, max_complexity)
 @common_options
 def verify_reactions(input_csv, output_dir, workers, generations, max_complexity):
 	"""Step 2: Verify candidates from DB using RDKit."""
-	space = ReactionSpace(input_csv=input_csv, output_dir=output_dir, n_workers=workers)
+	space = ReactionSpace(
+		input_csv=input_csv, 
+		output_dir=output_dir, 
+		n_workers=workers,
+		num_generations=generations,
+		max_reaction_complexity=max_complexity,
+	)
 	space.verify_reactions()
 
 @cli.command()
