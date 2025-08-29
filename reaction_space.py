@@ -17,6 +17,10 @@ from typing import List, Dict, Tuple, Optional, Set
 import networkx as nx
 import json
 
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module='rxnmapper')
+from rxnmapper import RXNMapper, BatchedMapper
+
 # Suppress verbose RDKit logging
 RDLogger.DisableLog('rdApp.*')
 
@@ -186,14 +190,16 @@ def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_rea
 	except Exception:
 		return []
 
-def worker_verify_reaction(reaction_smi_bytes: bytes) -> Optional[str]:
+def worker_verify_reaction(reaction_smi_bytes: bytes, confidence_threshold: float = 1.0) -> List[str]:
+	rxn_mapper = RXNMapper()
+
 	try:
 		reaction_smi = reaction_smi_bytes.decode('utf-8')
 		reactants_str, products_str = reaction_smi.split('>>')
-		
+
 		reactant_smis = reactants_str.split('.')
 		product_smis = products_str.split('.')
-		
+
 		all_smis = reactant_smis + product_smis
 		if any(not s or Chem.MolFromSmiles(s) is None for s in all_smis):
 			return None
@@ -201,30 +207,28 @@ def worker_verify_reaction(reaction_smi_bytes: bytes) -> Optional[str]:
 		reactant_mols = [Chem.MolFromSmiles(s) for s in reactant_smis]
 		product_mols = [Chem.MolFromSmiles(s) for s in product_smis]
 
-		# Use canonical SMILES (without explicit H) for the final key
 		r_cans = sorted([Chem.MolToSmiles(m, canonical=True) for m in reactant_mols])
 		p_cans = sorted([Chem.MolToSmiles(m, canonical=True) for m in product_mols])
 
-		# Skip identity reactions (e.g., A.B>>A.B)
 		if r_cans == p_cans:
 			return None
-			
-		final_reaction_str = f"{'.'.join(r_cans)}>>{'.'.join(p_cans)}"
 
-		r_can_explicit_h = [Chem.MolToSmiles(m, canonical=True, allHsExplicit=True) for m in reactant_mols]
-		p_can_explicit_h = [Chem.MolToSmiles(m, canonical=True, allHsExplicit=True) for m in product_mols]
-		
-		reaction_smarts_for_validation = f"{'.'.join(sorted(r_can_explicit_h))}>>{'.'.join(sorted(p_can_explicit_h))}"
+		final_canonical_reaction = f"{'.'.join(r_cans)}>>{'.'.join(p_cans)}"
 
-		rxn = rdChemReactions.ReactionFromSmarts(reaction_smarts_for_validation, useSmiles=True)
-		
-		if rxn.Validate(silent=True)[1] == 0:
-			return final_reaction_str
-		else:
-			return None
-			
 	except Exception:
 		return None
+
+	try:
+		result = rxn_mapper.get_attention_guided_atom_maps([reaction_smi])[0]
+
+		if result and result.get('confidence', 0.0) >= confidence_threshold:
+			return final_canonical_reaction
+		
+		return None
+
+	except Exception as e:
+		logging.warning(f"rxnmapper failed for a batch: {e}")
+
 
 ######################
 # ReactionSpace Class #

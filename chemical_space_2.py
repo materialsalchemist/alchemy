@@ -61,12 +61,15 @@ def worker_process_compositions(task_tuple, n_atoms, allowed_valences_map, confi
 			needed_hs = None
 			for total_valence in allowed_valences_map.get(sym, []):
 				h = int(total_valence - bond_sum[i] - radicals[i])
+
 				if h in config.VALENCE_OPTIONS:
 					needed_hs = h
 					break
+
 			if needed_hs is None:
 				is_plausible = False
 				break
+
 			valences.append(needed_hs)
 		
 		if is_plausible:
@@ -83,7 +86,7 @@ def worker_build_molecule(data: bytes) -> Tuple[str, bytes] | None:
 		mol = Chem.RWMol()
 		for i, comp in enumerate(composition):
 			atom = Chem.Atom(comp)
-			atom.SetNoImplicit(True) # Important for explicit control
+			atom.SetNoImplicit(True)
 			atom.SetNumRadicalElectrons(radicals[i])
 			atom.SetNumExplicitHs(valences[i])
 			mol.AddAtom(atom)
