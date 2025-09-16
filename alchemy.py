@@ -12,9 +12,9 @@ cli.add_command(chemical_cli, name="chemical")
 cli.add_command(reaction_cli, name="reaction")
 
 def main():
-	set_start_method("spawn")
 	cli()
 
 if __name__ == "__main__":
+	set_start_method("spawn")
 	freeze_support()
 	main()
