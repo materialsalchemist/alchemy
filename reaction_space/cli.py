@@ -92,3 +92,10 @@ def export_graph(output_dir, filename):
 	"""Step 3b: Generate and save the reaction network as a JSON file."""
 	space = ReactionSpace(input_csv="", output_dir=output_dir) # input_csv not needed for export
 	space.generate_reaction_network_graph(filename=filename)
+
+@reaction_cli.command()
+@click.option("-o", "--output-dir", type=click.Path(file_okay=False), default="reaction_space_results", show_default=True, help="Directory containing the reaction databases and where to save images.")
+def export_images(output_dir):
+	"""Step 3c: Export verified reactions from database to PNG images."""
+	space = ReactionSpace(input_csv="", output_dir=output_dir) # input_csv not needed for export
+	space.export_images()

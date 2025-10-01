@@ -1,3 +1,4 @@
+import hashlib
 import pandas as pd
 import click
 import itertools
@@ -13,6 +14,8 @@ from typing import List, Dict, Tuple
 import networkx as nx
 import json
 import math
+from rdkit import Chem
+from rdkit.Chem import AllChem, Draw
 
 from .workers import (
 	get_dissociation_fragments,
@@ -85,10 +88,16 @@ class ReactionSpace:
 			env = lmdb.open(db_path, readonly=True, lock=False)
 			with env.begin() as txn:
 				cursor = txn.cursor()
-				for key, _ in cursor:
+				for key, value in cursor:
 					if key not in seen_keys:
 						seen_keys.add(key)
-						batch.append(key)
+						try:
+							value_data = json.loads(value.decode('utf-8'))
+							smi = value_data["smi"]
+							batch.append(smi)
+						except (json.JSONDecodeError, KeyError) as e:
+							logging.warning(f"Skipping malformed entry with key {key.hex()}: {e}")
+							continue
 
 						if len(batch) >= batch_size:
 							yield batch
@@ -116,22 +125,29 @@ class ReactionSpace:
 
 		all_reactions_written = set()
 		
-		def read_keys_from_db(db_path):
+		def read_smiles_from_db(db_path: str) -> List[str]:
+			"""Reads a database and returns a list of reaction SMILES, not keys."""
 			if not os.path.exists(db_path): return []
 			env = lmdb.open(db_path, readonly=True, lock=False)
+			smiles_list = []
 			with env.begin() as txn:
-
-				keys = [key.decode('utf-8') for key, _ in txn.cursor()]
-
+				for key, value in txn.cursor():
+					try:
+						# Load from the value, not the key
+						value_data = json.loads(value.decode('utf-8'))
+						smiles_list.append(value_data["smi"])
+					except (json.JSONDecodeError, KeyError) as e:
+						logging.warning(f"Skipping malformed entry in {os.path.basename(db_path)} with key {key.hex()}: {e}")
+						continue
 			env.close()
-			return keys
+			return smiles_list
 
 		# --- Generation 0: Initial Dissociations ---
 		click.secho("\n--- G0: Performing Initial Bond Dissociations ---", bold=True)
 		g0_db_path = self._db_paths["candidates_g0"]
 		if os.path.exists(g0_db_path):
 			click.secho(f"Skipping G0, database already exists.", fg='green')
-			g0_reactions = read_keys_from_db(g0_db_path)
+			g0_reactions = read_smiles_from_db(g0_db_path)
 		else:
 			q = Queue(maxsize=self.n_workers * 2)
 			writer = Process(target=self._lmdb_writer, args=(q, g0_db_path))
@@ -148,7 +164,10 @@ class ReactionSpace:
 						if reaction_smi not in all_reactions_written:
 							all_reactions_written.add(reaction_smi)
 							g0_reactions.append(reaction_smi)
-							q.put((reaction_smi.encode('utf-8'), b'G0'))
+
+							key = hashlib.sha256(reaction_smi.encode('utf-8')).hexdigest().encode('utf-8')
+							value = json.dumps({"smi": reaction_smi, "gen": "G0"}).encode('utf-8')
+							q.put((key, value))
 
 			q.put(None)
 			writer.join()
@@ -163,7 +182,7 @@ class ReactionSpace:
 			g1_db_path = self._db_paths["candidates_g1"]
 			if os.path.exists(g1_db_path):
 				click.secho(f"Skipping G1, database already exists.", fg='green')
-				g1_reactions = read_keys_from_db(g1_db_path)
+				g1_reactions = read_smiles_from_db(g1_db_path)
 			else:
 				if len(current_generation_reactions) < 2:
 					 click.secho("Not enough G0 reactions to generate G1. Skipping.", fg="yellow")
@@ -185,7 +204,10 @@ class ReactionSpace:
 								if candidate not in all_reactions_written:
 									all_reactions_written.add(candidate)
 									g1_reactions.append(candidate)
-									q.put((candidate.encode('utf-8'), b'G1'))
+
+									key = hashlib.sha256(candidate.encode('utf-8')).hexdigest().encode('utf-8')
+									value = json.dumps({"smi": candidate, "gen": "G1"}).encode('utf-8')
+									q.put((key, value))
 
 					q.put(None)
 					writer.join()
@@ -203,7 +225,7 @@ class ReactionSpace:
 
 			if os.path.exists(g2plus_db_path):
 				click.secho(f"Skipping G{gen}, database already exists.", fg='green')
-				next_gen_reactions = read_keys_from_db(g2plus_db_path)
+				next_gen_reactions = read_smiles_from_db(g2plus_db_path)
 			else:
 				if len(current_generation_reactions) < 1:
 					click.secho(f"Not enough reactions from previous generation to generate G{gen}. Stopping.", fg="yellow")
@@ -231,7 +253,10 @@ class ReactionSpace:
 							if candidate not in all_reactions_written:
 								all_reactions_written.add(candidate)
 								next_gen_reactions.append(candidate)
-								q.put((candidate.encode('utf-8'), f'G{gen}'.encode()))
+
+								key = hashlib.sha256(candidate.encode('utf-8')).hexdigest().encode('utf-8')
+								value = json.dumps({"smi": candidate, "gen": f"G{gen}"}).encode('utf-8')
+								q.put((key, value))
 
 				q.put(None)
 				writer.join()
@@ -252,7 +277,6 @@ class ReactionSpace:
 		click.secho("\n--- Step 2: Verifying Reactions with RXNMapper ---", bold=True)
 		
 		candidate_db_paths = []
-
 		g0_path = self._db_paths["candidates_g0"]
 		if os.path.exists(g0_path):
 			candidate_db_paths.append(g0_path)
@@ -276,12 +300,12 @@ class ReactionSpace:
 				env.close()
 
 		if total_candidates == 0:
-			click.secho("No candidates to verify. Please run 'find-candidates' first with the appropriate settings.", fg="yellow")
+			click.secho("No candidates to verify. Please run 'find-candidates' first.", fg="yellow")
 			return
 		
 		click.secho(f"Found {total_candidates:,} total candidates to verify from specified databases.", fg="green")
 		
-		batch_size = 256
+		batch_size = 4
 		batch_generator = self._lmdb_batch_iterator(candidate_db_paths, batch_size)
 		total_batches = math.ceil(total_candidates / batch_size)
 
@@ -291,11 +315,13 @@ class ReactionSpace:
 			for verified_batch in tqdm(pool.imap_unordered(worker_verify_reaction_batch, batch_generator), total=total_batches, desc="Verifying Batches"):
 				for result_smi in verified_batch:
 					if result_smi:
-						key = result_smi.encode('utf-8')
-						txn_out.put(key, b'', overwrite=False)
+						key = hashlib.sha256(result_smi.encode('utf-8')).hexdigest().encode('utf-8')
+						value = json.dumps({"smi": result_smi}).encode('utf-8')
+						txn_out.put(key, value, overwrite=False)
 		
 		click.secho(f"Verified and saved {writer_env.stat()['entries']:,} unique, chemically plausible reactions.", fg="green")
 		writer_env.close()
+
 
 	def export_to_csv(self, filename: str = "reactions.csv"):
 		"""Exports the final verified reactions from the DB to a CSV file."""
@@ -318,8 +344,14 @@ class ReactionSpace:
 
 		reaction_data = []
 		with env.begin() as txn:
-			for key, _ in tqdm(txn.cursor(), total=num_reactions, desc="Exporting to CSV"):
-				reaction_smarts = key.decode()
+			for key, value in tqdm(txn.cursor(), total=num_reactions, desc="Exporting to CSV"):
+				# reaction_smarts = key.decode()
+				try:
+					value_data = json.loads(value.decode('utf-8'))
+					reaction_smarts = value_data["smi"]
+				except (json.JSONDecodeError, KeyError) as e:
+					logging.warning(f"Skipping malformed entry with key {key.hex()}: {e}")
+					continue
 				reactants, products = reaction_smarts.split('>>')
 				reaction_data.append({"Reactants": reactants, "Products": products})
 
@@ -370,6 +402,47 @@ class ReactionSpace:
 			json.dump(graph_data, f, indent=2)
 			
 		click.secho(f"Successfully generated and saved reaction network graph with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges to {output_json_path}", fg="green")
+
+
+	def export_images(self, image_dir: str = "reaction_images"):
+		"""Exports verified reactions from the database to PNG images."""
+		click.secho("\n--- Step 3c: Exporting Reactions to Images ---", bold=True)
+		
+		db_path = self._db_paths["verified"]
+		if not os.path.exists(db_path):
+			click.secho("Verified reactions database not found. Please run 'verify-reactions' first.", fg="red")
+			return
+		
+		env = lmdb.open(db_path, readonly=True)
+		num_reactions = env.stat()['entries']
+
+		if num_reactions == 0:
+			click.secho("No verified reactions to export as images.", fg="yellow")
+			env.close()
+			return
+
+		img_output_dir = os.path.join(self.output_dir, image_dir)
+		os.makedirs(img_output_dir, exist_ok=True)
+			
+		click.secho(f"Exporting {num_reactions} reactions as images to {img_output_dir}...", bold=True)
+		
+		total_exported = 0
+		with env.begin() as txn:
+			for i, (key, _) in enumerate(tqdm(txn.cursor(), total=num_reactions, desc="Exporting reaction images")):
+				reaction_smi = key.decode()
+				try:
+					rxn = AllChem.ReactionFromSmarts(reaction_smi, useSmiles=True)
+					img = Draw.ReactionToImage(rxn)
+					img.save(os.path.join(img_output_dir, f"reaction_{i}.png"))
+					total_exported += 1
+				except Exception as e:
+					logging.warning(f"Could not generate image for reaction {i} ({reaction_smi}). Error: {e}")
+		
+		env.close()
+		if total_exported > 0:
+			click.secho(f"\nFinished exporting {total_exported} reaction images to {img_output_dir}", fg="green")
+		else:
+			click.secho("\nNo reactions were processed for image export.", fg="yellow")
 
 
 	def explore(self):
