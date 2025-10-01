@@ -1,3 +1,5 @@
+import torch
+
 from typing import Set, Tuple, List
 from rdkit import Chem, RDLogger
 import logging
@@ -7,6 +9,22 @@ from rxnmapper import RXNMapper
 
 # Suppress verbose RDKit logging
 RDLogger.DisableLog('rdApp.*')
+
+def canonicalize_smiles(s):
+	mol = Chem.MolFromSmiles(s)
+
+	if mol is not None:
+		mol_no_hs = Chem.RemoveHs(mol)
+		return Chem.MolToSmiles(mol_no_hs, canonical=True)
+
+	return s
+
+def canonicalize_smiles_list(smiles_list):
+	return sorted([
+		canonicalize_smiles(s)
+		for s in smiles_list
+		if Chem.MolFromSmiles(s) is not None
+	])
 
 def get_dissociation_fragments(mol_smiles: str) -> Set[Tuple[str, str]]:
 	"""
@@ -18,6 +36,7 @@ def get_dissociation_fragments(mol_smiles: str) -> Set[Tuple[str, str]]:
 		if not mol:
 			return set()
 
+		mol_smiles = Chem.MolToSmiles(mol, canonical=True)
 		mol = Chem.AddHs(mol)
 	except Exception:
 		return set()
@@ -32,22 +51,34 @@ def get_dissociation_fragments(mol_smiles: str) -> Set[Tuple[str, str]]:
 		end_atom_idx = bonds[i].GetEndAtomIdx()
 		
 		emol.RemoveBond(begin_atom_idx, end_atom_idx)
-		
+
 		fragmented_mol = emol.GetMol()
 		
 		num_frags = len(Chem.GetMolFrags(fragmented_mol))
-		
-		if num_frags == 2:
-			try:
-				frag_mols = Chem.GetMolFrags(fragmented_mol, asMols=True)
 
-				f1_smi = Chem.MolToSmiles(frag_mols[0], canonical=True)
-				f2_smi = Chem.MolToSmiles(frag_mols[1], canonical=True)
-				
-				sorted_frags = tuple(sorted((f1_smi, f2_smi)))
-				fragments.add(sorted_frags)
-			except Exception:
+		if num_frags != 2:
+			continue
+		
+		try:
+			frag_mols = Chem.GetMolFrags(fragmented_mol, asMols=True)
+
+			f1_mol, f2_mol = frag_mols[0], frag_mols[1]
+			Chem.SanitizeMol(f1_mol)
+			Chem.SanitizeMol(f2_mol)
+
+			f1_smi = Chem.MolToSmiles(f1_mol, canonical=True)
+			f2_smi = Chem.MolToSmiles(f2_mol, canonical=True)
+
+			if not f1_smi or not f2_smi:
 				continue
+
+			f1_smi = canonicalize_smiles(f1_smi) 
+			f2_smi = canonicalize_smiles(f2_smi)
+			
+			sorted_frags = tuple(sorted((f1_smi, f2_smi)))
+			fragments.add(sorted_frags)
+		except Exception:
+			continue
 					
 	return fragments
 
@@ -55,6 +86,12 @@ def worker_generate_new_reactions_g1(reaction_pair: Tuple[str, str]) -> List[str
 	"""
 	Worker function to generate G1 reactions from pairs of G0 reactions.
 	Implements both transfer and rearrangement reactions as described in the paper.
+
+	1. Transfer reactions: Given A -> B + C and D -> B + E, create A + E -> D + C
+		 (One bond breaks, one bond forms, bimolecular)
+		 
+	2. Rearrangement reactions: Given A -> B + C and D -> B + C, create A -> D
+		 (One bond breaks, one bond forms, unimolecular)
 	"""
 	r1_str, r2_str = reaction_pair
 
@@ -64,13 +101,13 @@ def worker_generate_new_reactions_g1(reaction_pair: Tuple[str, str]) -> List[str
 		p2, frags2_str = r2_str.split(">>")
 		
 		# Split fragments
-		frags1 = sorted(frags1_str.split('.'))
-		frags2 = sorted(frags2_str.split('.'))
+		frags1 = set(frags1_str.split('.'))
+		frags2 = set(frags2_str.split('.'))
 		
 		new_reactions = []
 		
 		# Find common fragments between the two reactions
-		common_frags = set(frags1) & set(frags2)
+		common_frags = frags1 & frags2
 		
 		if len(common_frags) == 0:
 			return []
@@ -79,31 +116,40 @@ def worker_generate_new_reactions_g1(reaction_pair: Tuple[str, str]) -> List[str
 		# Where A -> B + C and D -> B + C (same products)
 		if p1 != p2 and frags1 == frags2:
 			parents = sorted([p1, p2])
-			reaction_smi = f"{parents[0]}>>{parents[1]}"
-			
-			return [reaction_smi]
+
+			r_cans = canonicalize_smiles(parents[0])
+			p_cans = canonicalize_smiles(parents[1])
+
+			if r_cans != p_cans:
+				reaction_smi = f"{r_cans}>>{p_cans}"
+				new_reactions.append(reaction_smi)
 
 		# Case 2: Transfer reaction A + E -> D + C
 		# Where A -> B + C and D -> B + E, B is common
-		if len(common_frags) == 1:
-			common_frag = common_frags.pop()
+		elif len(common_frags) == 1:
+			common_frag = next(iter(common_frags))
 			
-			unique_frag1 = next(f for f in frags1 if f != common_frag)
-			unique_frag2 = next(f for f in frags2 if f != common_frag)
+			unique_frag1 = frags1 - {common_frag}
+			unique_frag2 = frags2 - {common_frag}
 
-			reactants = sorted([p1, unique_frag2])
-			products = sorted([p2, unique_frag1])
+			if len(unique_frag1) == 1 and len(unique_frag2) == 1:
+				unique_frag1 = next(iter(unique_frag1))
+				unique_frag2 = next(iter(unique_frag2))
 
-			if reactants != products:
-				reactants_str = '.'.join(reactants)
-				products_str = '.'.join(products)
-				reaction_smi = f"{reactants_str}>>{products_str}"
+				reactants = canonicalize_smiles_list(sorted([p1, unique_frag2]))
+				products = canonicalize_smiles_list(sorted([p2, unique_frag1]))
 
-				return [reaction_smi]
+				if reactants != products:
+					reactants_str = '.'.join(reactants)
+					products_str = '.'.join(products)
+					reaction_smi = f"{reactants_str}>>{products_str}"
+
+					new_reactions.append(reaction_smi)
 		
 		return new_reactions
 		
-	except Exception:
+	except Exception as e:
+		logging.warning(f"Error processing reaction pair {reaction_pair}: {e}")
 		return []
 
 def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_reaction_complexity: int = 3) -> List[str]:
@@ -124,46 +170,68 @@ def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_rea
 		new_reactions = []
 		
 		# Case 1: Product of r1 is reactant of r2
+		# A -> B + C and B + D -> E + F creates A + D -> C + E + F
 		shared_r1p_r2r = r1_products & r2_reactants
-		if shared_r1p_r2r:
-			for shared in shared_r1p_r2r:
-				new_reactants = (r1_reactants | (r2_reactants - {shared}))
-				new_products = ((r1_products - {shared}) | r2_products)
-				
-				if new_reactants != new_products and len(new_reactants) <= max_reaction_complexity and len(new_products) <= max_reaction_complexity:
-					reactants_str = '.'.join(sorted(new_reactants))
-					products_str = '.'.join(sorted(new_products))
-					reaction_smi = f"{reactants_str}>>{products_str}"
+		for shared in shared_r1p_r2r:
+			remaining_r1_reactants = r1_reactants
+			remaining_r1_products = r1_products - {shared_species}
+			remaining_r2_reactants = r2_reactants - {shared_species}
+			remaining_r2_products = r2_products
 
-					new_reactions.append(reaction_smi)
+			new_reactants = remaining_r1_reactants | remaining_r2_reactants
+			new_products = remaining_r1_products | remaining_r2_products
+
+			new_reactants = canonicalize_smiles_list(new_reactants)
+			new_products = canonicalize_smiles_list(new_products)
+			
+			if 1 <= len(new_reactants) <= 3 and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
+				reactants_str = '.'.join(sorted(new_reactants))
+				products_str = '.'.join(sorted(new_products))
+				reaction_smi = f"{reactants_str}>>{products_str}"
+
+				new_reactions.append(reaction_smi)
 		
 		# Case 2: Product of r2 is reactant of r1
+		# A + B -> C + D and C -> E + F creates A + B + E -> D + F
 		shared_r2p_r1r = r2_products & r1_reactants
-		if shared_r2p_r1r:
-			for shared in shared_r2p_r1r:
-				new_reactants = (r2_reactants | (r1_reactants - {shared}))
-				new_products = ((r2_products - {shared}) | r1_products)
-				
-				if new_reactants != new_products and len(new_reactants) <= max_reaction_complexity and len(new_products) <= max_reaction_complexity:
-					reactants_str = '.'.join(sorted(new_reactants))
-					products_str = '.'.join(sorted(new_products))
-					reaction_smi = f"{reactants_str}>>{products_str}"
+		for shared in shared_r2p_r1r:
+			remaining_r1_reactants = r1_reactants - {shared_species}
+			remaining_r1_products = r1_products
+			remaining_r2_reactants = r2_reactants
+			remaining_r2_products = r2_products - {shared_species}
+			
+			new_reactants = remaining_r1_reactants | remaining_r2_reactants
+			new_products = remaining_r1_products | remaining_r2_products
 
-					new_reactions.append(reaction_smi)
+			new_reactants = canonicalize_smiles_list(new_reactants)
+			new_products = canonicalize_smiles_list(new_products)
+			
+			if 1 <= len(new_reactants) <= 3 and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
+				reactants_str = '.'.join(sorted(new_reactants))
+				products_str = '.'.join(sorted(new_products))
+				reaction_smi = f"{reactants_str}>>{products_str}"
+
+				new_reactions.append(reaction_smi)
 		
 		# Case 3: Reactants share species (parallel reactions with common reactant)
+		# A + B -> C + D and A + E -> F + G creates B + E -> C + D + F + G (removing A)
 		shared_reactants = r1_reactants & r2_reactants
-		if shared_reactants:
-			for shared in shared_reactants:
-				new_reactants = (r1_reactants - {shared}) | (r2_reactants - {shared}) | {shared}
-				new_products = r1_products | r2_products
-				
-				if new_reactants != new_products and len(new_reactants) <= max_reaction_complexity and len(new_products) <= max_reaction_complexity:
-					reactants_str = '.'.join(sorted(new_reactants))
-					products_str = '.'.join(sorted(new_products))
-					reaction_smi = f"{reactants_str}>>{products_str}"
+		for shared in shared_reactants:
+			remaining_r1_reactants = r1_reactants - {shared_species}
+			remaining_r2_reactants = r2_reactants - {shared_species}
+			
+			new_reactants = remaining_r1_reactants | remaining_r2_reactants
+			new_products = r1_products | r2_products
 
-					new_reactions.append(reaction_smi)
+			new_reactants = canonicalize_smiles_list(new_reactants)
+			new_products = canonicalize_smiles_list(new_products)
+			
+			if 1 <= len(new_reactants) <= 3 and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
+				reactants_str = '.'.join(sorted(new_reactants))
+				products_str = '.'.join(sorted(new_products))
+				reaction_smi = f"{reactants_str}>>{products_str}"
+
+				new_reactions.append(reaction_smi)
 		
 		return new_reactions
 		
@@ -174,7 +242,7 @@ rxn_mapper_instance = None
 
 def worker_verify_reaction_batch(
 	reaction_smi_bytes_batch: List[bytes], 
-	confidence_threshold: float = 0.99
+	confidence_threshold: float = 0.999
 ) -> List[str]:
 	"""
 	Worker function to verify a BATCH of reaction SMILES.
@@ -189,9 +257,10 @@ def worker_verify_reaction_batch(
 	reactions_to_map = []
 	original_reactions_map = {}
 
-	for reaction_smi_bytes in reaction_smi_bytes_batch:
+	for i, reaction_smi_bytes in enumerate(reaction_smi_bytes_batch):
 		try:
-			reaction_smi = reaction_smi_bytes.decode('utf-8')
+			# reaction_smi = reaction_smi_bytes.decode('utf-8')
+			reaction_smi = reaction_smi_bytes
 			reactants_str, products_str = reaction_smi.split('>>')
 			reactant_mols = [Chem.MolFromSmiles(s) for s in reactants_str.split('.')]
 			product_mols = [Chem.MolFromSmiles(s) for s in products_str.split('.')]
@@ -211,7 +280,7 @@ def worker_verify_reaction_batch(
 		except Exception as e:
 			print(e)
 			continue
-	
+
 	if not reactions_to_map:
 		return []
 
