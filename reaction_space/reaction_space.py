@@ -19,6 +19,8 @@ from rdkit.Chem import AllChem, Draw
 
 from .workers import (
 	get_dissociation_fragments,
+	worker_systematic_recombination,
+	worker_radical_addition,
 	worker_generate_new_reactions_g1,
 	worker_generate_higher_gen_reactions,
 	worker_verify_reaction_batch,
@@ -27,10 +29,13 @@ from .workers import (
 @dataclass
 class ReactionSpace:
 	input_csv: str
+	custom_reactants_csv: str = None
 	output_dir: str = "reaction_space_results"
 	n_workers: int = field(default_factory=cpu_count)
 	num_generations: int = 2
 	max_reaction_complexity: int = 3
+	g05_method: str = 'recombination'
+	require_custom_reactant: bool = False
 	
 	_db_paths: Dict[str, str] = field(init=False, default_factory=dict)
 
@@ -41,6 +46,7 @@ class ReactionSpace:
 		
 		self._db_paths = {
 			"candidates_g0": os.path.join(db_dir, "reaction_candidates_g0.lmdb"),
+			"candidates_g0.5": os.path.join(db_dir, "reaction_candidates_g0.5.lmdb"),
 			"candidates_g1": os.path.join(db_dir, "reaction_candidates_g1.lmdb"),
 			"candidates_g2plus": os.path.join(db_dir, "reaction_candidates_g{gen}_c{max_c}.lmdb"),
 			"verified": os.path.join(db_dir, "verified_reactions.lmdb"),
@@ -74,17 +80,40 @@ class ReactionSpace:
 				for k, v in batch.items():
 					txn.put(k, v, overwrite=False)
 
-	def _lmdb_batch_iterator(self, db_paths: List[str], batch_size: int):
+	def _lmdb_batch_iterator(self, db_paths: List[str], batch_size: int, custom_reactants_filter: set = None):
 		"""
 		A generator that streams keys from multiple LMDB databases and yields them in batches.
 		"""
 		batch = []
-
 		seen_keys = set()
+
+		def __should_keep_reaction(smi: str, filter_set: set) -> bool:
+			if not filter_set:
+				return True
+
+			try:
+				reactants_str, products_str = smi.split('>>')
+				reactants = {r for r in reactants_str.split('.') if r}
+				products = {p for p in products_str.split('.') if p}
+
+				has_custom_in_reactants = not filter_set.isdisjoint(reactants)
+				has_custom_in_products = not filter_set.isdisjoint(products)
+
+				# print(reactants, products)
+				# print(has_custom_in_reactants, has_custom_in_products)
+
+				# XOR condition: Keep if custom reactant is in reactants OR products, but NOT both.
+				return has_custom_in_reactants ^ has_custom_in_products
+			except (Exception, ValueError, AttributeError) as e:
+				print("Batch Iterator: ", e)
+				return False
+
+
 		for db_path in db_paths:
 			if not os.path.exists(db_path):
 				continue
-			
+		
+		try:
 			env = lmdb.open(db_path, readonly=True, lock=False)
 			with env.begin() as txn:
 				cursor = txn.cursor()
@@ -94,19 +123,25 @@ class ReactionSpace:
 						try:
 							value_data = json.loads(value.decode('utf-8'))
 							smi = value_data["smi"]
+
+							if custom_reactants_filter and not __should_keep_reaction(smi, custom_reactants_filter):
+								continue
+
 							batch.append(smi)
-						except (json.JSONDecodeError, KeyError) as e:
+
+							if len(batch) >= batch_size:
+								yield batch
+								batch = []
+						except (json.JSONDecodeError, KeyError, Exception) as e:
 							logging.warning(f"Skipping malformed entry with key {key.hex()}: {e}")
 							continue
 
-						if len(batch) >= batch_size:
-							yield batch
-							batch = []
-
 			env.close()
-		
-		if batch:
-			yield batch
+			
+			if batch:
+				yield batch
+		except Exception as e:
+			print(e)
 
 	def find_reaction_candidates(self):
 		"""
@@ -175,6 +210,85 @@ class ReactionSpace:
 		click.secho(f"Found {len(g0_reactions):,} unique G0 reactions.", fg="green")
 		all_reactions_written.update(g0_reactions)
 		current_generation_reactions = g0_reactions
+		print(g0_reactions)
+
+		g0_fragments = set()
+		for rxn_smi in g0_reactions:
+			_, frags = rxn_smi.split('>>')
+			g0_fragments.update(frags.split('.'))
+
+		# --- Generation 0.5: Conditional logic for worker selection ---
+		click.secho(f"\n--- G0.5: Using '{self.g05_method}' method ---", bold=True)
+		g05_db_path = self._db_paths["candidates_g0.5"]
+
+		custom_molecules = []
+		if self.custom_reactants_csv and os.path.exists(self.custom_reactants_csv):
+			try:
+				df_custom = pd.read_csv(self.custom_reactants_csv)
+				if 'SMILES' in df_custom.columns and not df_custom.empty:
+					custom_molecules = df_custom['SMILES'].dropna().tolist()
+					click.secho(f"Loaded {len(custom_molecules)} custom molecules from {self.custom_reactants_csv}", fg="green")
+				else:
+					click.secho(f"'{self.custom_reactants_csv}' is empty or missing 'SMILES' column. Skipping G0.5.", fg="yellow")
+			except Exception as e:
+				click.secho(f"Could not read '{self.custom_reactants_csv}'. Skipping G0.5. Error: {e}", fg="red")
+
+		if not custom_molecules:
+			click.secho("No custom molecules provided. Skipping G0.5 step.", fg="yellow")
+			g05_reactions = []
+		elif os.path.exists(g05_db_path):
+			click.secho(f"Skipping G0.5, database already exists at {g05_db_path}", fg='green')
+			g05_reactions = read_smiles_from_db(g05_db_path)
+		else:
+			if self.g05_method == 'recombination':
+				worker_func = worker_systematic_recombination
+				tqdm_desc = "G0.5: Recombining"
+			elif self.g05_method == 'addition':
+				worker_func = worker_radical_addition
+				tqdm_desc = "G0.5: Radical Addition"
+			else:
+				# This case should be prevented by the CLI's 'choice' option
+				raise ValueError(f"Unknown G0.5 method: {self.g05_method}")
+
+			q = Queue(maxsize=self.n_workers * 2)
+			writer = Process(target=self._lmdb_writer, args=(q, g05_db_path))
+			writer.start()
+
+			reaction_pairs = list(itertools.product(g0_fragments, custom_molecules))
+			g05_reactions = []
+			with Pool(self.n_workers) as pool:
+				results_iterator = pool.imap_unordered(worker_func, reaction_pairs, chunksize=512)
+				
+				for res_list in tqdm(results_iterator, total=len(reaction_pairs), desc=tqdm_desc):
+					for candidate in res_list:
+						if candidate not in all_reactions_written:
+							all_reactions_written.add(candidate)
+							g05_reactions.append(candidate)
+							key = hashlib.sha256(candidate.encode('utf-8')).hexdigest().encode('utf-8')
+							value = json.dumps({"smi": candidate, "gen": "G0.5"}).encode('utf-8')
+							q.put((key, value))
+
+			q.put(None)
+			writer.join()
+			click.secho(f"Found {len(g05_reactions):,} unique G0.5 reactions.", fg="green")
+			all_reactions_written.update(g05_reactions)
+
+		click.secho(f"\nCombining {len(g0_reactions)} G0 and {len(g05_reactions)} G0.5 reactions for G1.", bold=True)
+
+		if self.require_custom_reactant:
+			if not g05_reactions:
+				click.secho(
+					"Warning: '--require-custom-reactant' flag is set, but no G0.5 reactions were generated. "
+					"No reactions will be passed to subsequent generations.",
+					fg="yellow"
+				)
+				current_generation_reactions = []
+			else:
+				click.secho("\n--require-custom-reactant is active. Using ONLY G0.5 reactions for G1.", fg="cyan", bold=True)
+				current_generation_reactions = g05_reactions
+		else:
+			click.secho(f"\nUsing {len(g0_reactions) + len(g05_reactions)} reactions from G0 & G0.5 for G1.", bold=True)
+			current_generation_reactions = g0_reactions + g05_reactions
 
 		# --- Generation 1: Transfer and Rearrangement Reactions ---
 		if self.num_generations >= 1:
@@ -215,10 +329,11 @@ class ReactionSpace:
 			click.secho(f"Found {len(g1_reactions):,} unique G1 reactions.", fg="green")
 			all_reactions_written.update(g1_reactions)
 			current_generation_reactions = g1_reactions
+			print(g1_reactions)
 
 		# --- Generation 2+: Higher-order reactions ---
 		for gen in range(2, self.num_generations + 1):
-			max_c = gen + 1
+			max_c = gen + 2
 
 			click.secho(f"\n--- G{gen}: Generating Higher-order Reactions (max_complexity={self.max_reaction_complexity}) ---", bold=True)
 			g2plus_db_path = self._db_paths["candidates_g2plus"].format(gen=gen, max_c=min(max_c, self.max_reaction_complexity))
@@ -268,6 +383,7 @@ class ReactionSpace:
 
 			all_reactions_written.update(next_gen_reactions)
 			current_generation_reactions = next_gen_reactions
+			print(next_gen_reactions)
 
 		click.secho(f"\n--- Finalizing ---", bold=True)
 		click.secho(f"Total unique reaction candidates considered: {len(all_reactions_written):,}")
@@ -275,11 +391,35 @@ class ReactionSpace:
 
 	def verify_reactions(self):
 		click.secho("\n--- Step 2: Verifying Reactions with RXNMapper ---", bold=True)
+
+		custom_reactants_filter = set()
+		if self.require_custom_reactant:
+			click.secho("--require-custom-reactant is active for verification.", fg="cyan", bold=True)
+			if self.custom_reactants_csv and os.path.exists(self.custom_reactants_csv):
+				try:
+					df_custom = pd.read_csv(self.custom_reactants_csv)
+					if 'SMILES' in df_custom.columns:
+						custom_reactants_filter = set(df_custom['SMILES'].dropna().tolist())
+						if custom_reactants_filter:
+							 click.secho(f"Loaded {len(custom_reactants_filter)} custom molecules for filtering.", fg="green")
+						else:
+							 click.secho("Custom reactants file is empty. No filtering will be applied.", fg="yellow")
+					else:
+						click.secho("Custom reactants file missing 'SMILES' column. No filtering will be applied.", fg="yellow")
+				except Exception as e:
+					click.secho(f"Error reading custom reactants file: {e}. No filtering will be applied.", fg="red")
+			else:
+				click.secho("Custom reactants file not provided or found. No filtering will be applied.", fg="yellow")
 		
 		candidate_db_paths = []
-		g0_path = self._db_paths["candidates_g0"]
-		if os.path.exists(g0_path):
-			candidate_db_paths.append(g0_path)
+		if not self.require_custom_reactant:
+			g0_path = self._db_paths["candidates_g0"]
+			if os.path.exists(g0_path):
+				candidate_db_paths.append(g0_path)
+
+		g05_path = self._db_paths["candidates_g0.5"]
+		if os.path.exists(g05_path):
+			candidate_db_paths.append(g05_path)
 
 		if self.num_generations >= 1:
 			g1_path = self._db_paths["candidates_g1"]
@@ -287,7 +427,7 @@ class ReactionSpace:
 				candidate_db_paths.append(g1_path)
 
 		for gen in range(2, self.num_generations + 1):
-			max_c = gen + 1
+			max_c = gen + 2
 			db_path = self._db_paths["candidates_g2plus"].format(gen=gen, max_c=min(max_c, self.max_reaction_complexity))
 			if os.path.exists(db_path):
 				candidate_db_paths.append(db_path)
@@ -304,9 +444,11 @@ class ReactionSpace:
 			return
 		
 		click.secho(f"Found {total_candidates:,} total candidates to verify from specified databases.", fg="green")
+		if custom_reactants_filter:
+			click.secho("Filtering candidates to only include those involving custom reactants...", fg="cyan")
 		
 		batch_size = 4
-		batch_generator = self._lmdb_batch_iterator(candidate_db_paths, batch_size)
+		batch_generator = self._lmdb_batch_iterator(candidate_db_paths, batch_size, custom_reactants_filter=custom_reactants_filter)
 		total_batches = math.ceil(total_candidates / batch_size)
 
 		writer_env = lmdb.open(self._db_paths["verified"], map_size=10**11, writemap=True)
