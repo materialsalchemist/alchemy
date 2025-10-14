@@ -5,8 +5,8 @@ from reaction_space.cli import reaction_cli
 
 @click.group()
 def cli():
-    """Main CLI for alchemy."""
-    pass
+	"""Main CLI for alchemy."""
+	pass
 
 cli.add_command(chemical_cli, name="chemical")
 cli.add_command(reaction_cli, name="reaction")
