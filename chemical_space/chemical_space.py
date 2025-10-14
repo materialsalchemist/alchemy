@@ -333,7 +333,6 @@ class ChemicalSpace:
 					[
 						"obabel",
 						"-:" + smi,
-						"-h", 
 						"--gen3D",
 						"-O" + os.path.join(xyz_dir, f"{mol_filename_base}.xyz"),
 					],
