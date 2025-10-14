@@ -9,7 +9,7 @@ from rdkit import RDLogger
 @click.group(context_settings=dict(help_option_names=['-h', '--help']))
 def chemical_cli():
 	logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
-	RDLogger.DisableLog('rdApp.*')
+	RDLogger.DisableLog("rdApp.*")
 
 def common_options(f):
 	@wraps(f)

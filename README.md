@@ -51,7 +51,7 @@ The `chemical` subcommand is used to generate a set of molecules.
 The easiest way to get started is to run the full workflow, which generates molecules and exports them.
 
 ```bash
-alchemy chemical explore --max-atoms 3 --atoms C O H --output-dir chemical_space_results
+alchemy chemical explore --max-atoms 3 -a C -a O -a H --output-dir chemical_space_results
 ```
 
 This command will:
@@ -141,7 +141,7 @@ _Note: Make sure the `chemical_space_results` and `reaction_space_results` direc
 
 If you want to contribute to the project, here’s how to set up a local development environment using `uv`.
 
-Development Setup with `uv`
+**Option 1**: Development Setup with `uv`
 
 - **1: Clone the repository**
   ```bash
@@ -151,6 +151,21 @@ Development Setup with `uv`
 
 - **2: Create and activate a virtual environment:**
   ```bash
-  uv venv --seed
+  uv sync
   source .venv/bin/activate
+  ```
+
+**Option 2:** Development Setup with `pip`
+
+- **1: Clone the repository**
+  ```bash
+  git clone https://github.com/materialsalchemist/alchemy
+  cd alchemy
+  ```
+
+- **2: Create and activate a virtual environment:**
+  ```bash
+  python -m venv .venv
+  source .venv/bin/activate
+  pip install -r requirements.txt
   ```

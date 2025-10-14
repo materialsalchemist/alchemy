@@ -1,5 +1,5 @@
 import click
-from multiprocessing import set_start_method
+from multiprocessing import set_start_method, freeze_support
 from chemical_space.cli import chemical_cli
 from reaction_space.cli import reaction_cli
 
@@ -16,4 +16,5 @@ def main():
 
 if __name__ == "__main__":
 	set_start_method("spawn")
+	freeze_support()
 	main()
