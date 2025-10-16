@@ -25,6 +25,7 @@ from .workers import (
 	worker_generate_higher_gen_reactions,
 	worker_verify_reaction_batch,
 )
+from .utils import canonicalize_smiles, canonicalize_smiles_list
 
 @dataclass
 class ReactionSpace:
@@ -113,35 +114,36 @@ class ReactionSpace:
 			if not os.path.exists(db_path):
 				continue
 		
-		try:
-			env = lmdb.open(db_path, readonly=True, lock=False)
-			with env.begin() as txn:
-				cursor = txn.cursor()
-				for key, value in cursor:
-					if key not in seen_keys:
-						seen_keys.add(key)
-						try:
-							value_data = json.loads(value.decode('utf-8'))
-							smi = value_data["smi"]
+			try:
+				env = lmdb.open(db_path, readonly=True, lock=False)
+				with env.begin() as txn:
+					cursor = txn.cursor()
+					for key, value in cursor:
+						if key not in seen_keys:
+							seen_keys.add(key)
+							try:
+								value_data = json.loads(value.decode('utf-8'))
+								smi = value_data["smi"]
+								gen = value_data["gen"]
 
-							if custom_reactants_filter and not __should_keep_reaction(smi, custom_reactants_filter):
+								if custom_reactants_filter and not __should_keep_reaction(smi, custom_reactants_filter):
+									continue
+
+								batch.append((smi, gen))
+
+								if len(batch) >= batch_size:
+									yield batch
+									batch = []
+							except (json.JSONDecodeError, KeyError, Exception) as e:
+								logging.warning(f"Skipping malformed entry with key {key.hex()}: {e}")
 								continue
 
-							batch.append(smi)
-
-							if len(batch) >= batch_size:
-								yield batch
-								batch = []
-						except (json.JSONDecodeError, KeyError, Exception) as e:
-							logging.warning(f"Skipping malformed entry with key {key.hex()}: {e}")
-							continue
-
-			env.close()
-			
-			if batch:
-				yield batch
-		except Exception as e:
-			print(e)
+				env.close()
+				
+				if batch:
+					yield batch
+			except Exception as e:
+				print(e)
 
 	def find_reaction_candidates(self):
 		"""
@@ -157,6 +159,9 @@ class ReactionSpace:
 		df = pd.read_csv(self.input_csv)
 		initial_molecules = df['SMILES'].tolist()
 		click.secho(f"Loaded {len(initial_molecules)} molecules from {self.input_csv}", fg="green")
+
+		initial_molecules_set = {canonicalize_smiles(s) for s in initial_molecules if s and isinstance(s, str)}
+		click.secho(f"Created a set of {len(initial_molecules_set)} unique canonicalized initial molecules for filtering.", fg="cyan")
 
 		all_reactions_written = set()
 		
@@ -194,6 +199,9 @@ class ReactionSpace:
 
 				for parent_smi, frag_set in tqdm(zip(initial_molecules, results_iterator), total=len(initial_molecules), desc="G0: Dissociating"):
 					for f1, f2 in frag_set:
+						if not (f1 in initial_molecules_set and f2 in initial_molecules_set):
+							continue
+
 						reaction_smi = f"{parent_smi}>>{f1}.{f2}"
 
 						if reaction_smi not in all_reactions_written:
@@ -455,10 +463,10 @@ class ReactionSpace:
 
 		with writer_env.begin(write=True) as txn_out, Pool(self.n_workers) as pool:
 			for verified_batch in tqdm(pool.imap_unordered(worker_verify_reaction_batch, batch_generator), total=total_batches, desc="Verifying Batches"):
-				for result_smi in verified_batch:
+				for result_smi, gen in verified_batch:
 					if result_smi:
 						key = hashlib.sha256(result_smi.encode('utf-8')).hexdigest().encode('utf-8')
-						value = json.dumps({"smi": result_smi}).encode('utf-8')
+						value = json.dumps({"smi": result_smi, "gen": gen}).encode('utf-8')
 						txn_out.put(key, value, overwrite=False)
 		
 		click.secho(f"Verified and saved {writer_env.stat()['entries']:,} unique, chemically plausible reactions.", fg="green")
@@ -485,23 +493,40 @@ class ReactionSpace:
 			return
 
 		reaction_data = []
+		reactions_by_gen = {}
 		with env.begin() as txn:
 			for key, value in tqdm(txn.cursor(), total=num_reactions, desc="Exporting to CSV"):
 				# reaction_smarts = key.decode()
 				try:
 					value_data = json.loads(value.decode('utf-8'))
 					reaction_smarts = value_data["smi"]
+					gen = value_data["gen"]
+
+					reactants, products = reaction_smarts.split('>>')
+					reaction_dict = {"Reactants": reactants, "Products": products}
+
+					if gen not in reactions_by_gen:
+						reactions_by_gen[gen] = []
+
+					reactions_by_gen[gen].append(reaction_dict)
+					reaction_data.append(reaction_dict)
+
 				except (json.JSONDecodeError, KeyError) as e:
 					logging.warning(f"Skipping malformed entry with key {key.hex()}: {e}")
 					continue
-				reactants, products = reaction_smarts.split('>>')
-				reaction_data.append({"Reactants": reactants, "Products": products})
 
 		df = pd.DataFrame(reaction_data)
 		df.to_csv(output_csv_path, index=False)
 		click.secho(f"Successfully exported {len(df)} reactions to {output_csv_path}", fg="green")
-		env.close()
 
+		for gen_name, gen_data in reactions_by_gen.items():
+			if gen_data:
+				gen_output_path = os.path.join(self.output_dir, f"reactions_{gen_name}.csv")
+				df_gen = pd.DataFrame(gen_data)
+				df_gen.to_csv(gen_output_path, index=False)
+				click.secho(f"Exported {len(df_gen)} verified {gen_name.upper()} reactions to {gen_output_path}", fg="green")
+
+		env.close()
 
 	def generate_reaction_network_graph(self, filename: str = "reaction_network.json"):
 		"""Generates a NetworkX graph from verified reactions and saves it as JSON."""

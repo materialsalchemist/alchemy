@@ -1,5 +1,3 @@
-import torch
-
 from typing import Set, Tuple, List
 from rdkit import Chem, RDLogger
 import logging
@@ -7,24 +5,10 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module='rxnmapper')
 from rxnmapper import RXNMapper
 
+from .utils import canonicalize_smiles, canonicalize_smiles_list
+
 # Suppress verbose RDKit logging
 RDLogger.DisableLog('rdApp.*')
-
-def canonicalize_smiles(s):
-	mol = Chem.MolFromSmiles(s)
-
-	if mol is not None:
-		mol = Chem.AddHs(mol)
-		return Chem.MolToSmiles(mol, canonical=True)
-
-	return s
-
-def canonicalize_smiles_list(smiles_list):
-	return sorted([
-		canonicalize_smiles(s)
-		for s in smiles_list
-		if Chem.MolFromSmiles(s) is not None
-	])
 
 def get_dissociation_fragments(mol_smiles: str) -> Set[Tuple[str, str]]:
 	"""
@@ -37,7 +21,7 @@ def get_dissociation_fragments(mol_smiles: str) -> Set[Tuple[str, str]]:
 			return set()
 
 		mol_smiles = Chem.MolToSmiles(mol, canonical=True)
-		mol = Chem.AddHs(mol)
+		mol = Chem.RemoveHs(mol)
 	except Exception:
 		return set()
 
@@ -65,8 +49,6 @@ def get_dissociation_fragments(mol_smiles: str) -> Set[Tuple[str, str]]:
 			f1_mol, f2_mol = frag_mols[0], frag_mols[1]
 			Chem.SanitizeMol(f1_mol)
 			Chem.SanitizeMol(f2_mol)
-			f1_mol = Chem.AddHs(f1_mol)
-			f2_mol = Chem.AddHs(f2_mol)
 
 			f1_smi = Chem.MolToSmiles(f1_mol, canonical=True)
 			f2_smi = Chem.MolToSmiles(f2_mol, canonical=True)
@@ -105,8 +87,7 @@ def _combine_fragments(mol1: Chem.Mol, mol2: Chem.Mol) -> str:
 			new_mol.GetAtomWithIdx(idx).SetNumRadicalElectrons(0)
 
 		Chem.SanitizeMol(new_mol)
-		# final_mol = Chem.RemoveHs(new_mol)
-		final_mol = new_mol
+		final_mol = Chem.RemoveHs(new_mol)
 
 		return Chem.MolToSmiles(final_mol, canonical=True)
 	except Exception:
@@ -422,12 +403,11 @@ def worker_verify_reaction_batch(
 
 	valid_reactions = []
 	reactions_to_map = []
+	reactions_gen = []
 	original_reactions_map = {}
 
-	for i, reaction_smi_bytes in enumerate(reaction_smi_bytes_batch):
+	for i, (reaction_smi, gen) in enumerate(reaction_smi_bytes_batch):
 		try:
-			# reaction_smi = reaction_smi_bytes.decode('utf-8')
-			reaction_smi = reaction_smi_bytes
 			reactants_str, products_str = reaction_smi.split('>>')
 			reactant_mols = [Chem.MolFromSmiles(s) for s in reactants_str.split('.')]
 			product_mols = [Chem.MolFromSmiles(s) for s in products_str.split('.')]
@@ -444,6 +424,7 @@ def worker_verify_reaction_batch(
 			final_canonical_reaction = f"{'.'.join(r_cans)}>>{'.'.join(p_cans)}"
 			original_reactions_map[reaction_smi] = final_canonical_reaction
 			reactions_to_map.append(reaction_smi)
+			reactions_gen.append(gen)
 		except Exception as e:
 			print(e)
 			continue
@@ -454,20 +435,21 @@ def worker_verify_reaction_batch(
 	# try:
 	# 	results = rxn_mapper_instance.get_attention_guided_atom_maps(reactions_to_map)
 
-	# 	for original_smi, result in zip(reactions_to_map, results):
+	# 	for original_smi, gen, result in zip(reactions_to_map, reactions_gen, results):
 	# 		confidence = result.get('confidence', 0.0)
 	# 		mapped_rxn = result.get('mapped_rxn', "")
 
 	# 		if confidence >= confidence_threshold:
 	# 			canonical_form = original_reactions_map.get(original_smi)
 	# 			if canonical_form:
-	# 				valid_reactions.append(canonical_form)
+	# 				valid_reactions.append((canonical_form, gen))
 
 	# except Exception as e:
 	# 	logging.warning(f"rxnmapper failed for a batch: {e}")
-	for original_smi in reactions_to_map:
+
+	for original_smi, gen in zip(reactions_to_map, reactions_gen):
 		canonical_form = original_reactions_map.get(original_smi)
 		if canonical_form:
-			valid_reactions.append(canonical_form)
+			valid_reactions.append((canonical_form, gen))
 
 	return valid_reactions
