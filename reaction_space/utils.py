@@ -1,4 +1,4 @@
-from typing import Set, Tuple, List
+from typing import Set, Tuple, List, Dict
 from rdkit import Chem, RDLogger
 
 import logging
@@ -37,3 +37,26 @@ def canonicalize_smiles_list(smiles_list):
 		for s in smiles_list
 		if Chem.MolFromSmiles(s) is not None
 	])
+
+def add_atomic_compositions(smiles_list: List[str]) -> Dict[str, int]:
+	"""Return a single aggregated atomic composition dictionary for the input SMILES list.
+
+	The returned dictionary maps atomic symbol (e.g. 'C', 'O') to the total count
+	summed over all SMILES in the input list. Note: implicit hydrogens are not
+	counted because they are not present as explicit atoms in the RDKit Mol
+	unless hydrogens are added beforehand (use Chem.AddHs to include them).
+	"""
+
+	total_counts: Dict[str, int] = {}
+
+	for smi in smiles_list:
+		mol = Chem.MolFromSmiles(smi)
+
+		if mol is None:
+			raise Exception(f"Invalid SMILES string: {smi}")
+
+		for atom in mol.GetAtoms():
+			sym = atom.GetSymbol()
+			total_counts[sym] = total_counts.get(sym, 0) + 1
+
+	return total_counts

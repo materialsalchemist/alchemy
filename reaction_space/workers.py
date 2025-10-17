@@ -5,7 +5,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module='rxnmapper')
 from rxnmapper import RXNMapper
 
-from .utils import canonicalize_smiles, canonicalize_smiles_list
+from .utils import canonicalize_smiles, canonicalize_smiles_list, add_atomic_compositions
 
 # Suppress verbose RDKit logging
 RDLogger.DisableLog('rdApp.*')
@@ -331,6 +331,9 @@ def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_rea
 
 			new_reactants = canonicalize_smiles_list(list(new_reactants))
 			new_products = canonicalize_smiles_list(list(new_products))
+
+			if add_atomic_compositions(new_reactants) != add_atomic_compositions(new_products):
+				continue
 			
 			if 1 <= len(new_reactants) <= max_reaction_complexity and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
 				reactants_str = '.'.join(sorted(new_reactants))
@@ -354,6 +357,8 @@ def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_rea
 			new_reactants = canonicalize_smiles_list(list(new_reactants))
 			new_products = canonicalize_smiles_list(list(new_products))
 			
+			if add_atomic_compositions(new_reactants) != add_atomic_compositions(new_products):
+				continue
 			if 1 <= len(new_reactants) <= max_reaction_complexity and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
 				reactants_str = '.'.join(sorted(new_reactants))
 				products_str = '.'.join(sorted(new_products))
@@ -373,7 +378,8 @@ def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_rea
 
 			new_reactants = canonicalize_smiles_list(list(new_reactants))
 			new_products = canonicalize_smiles_list(list(new_products))
-			
+			if add_atomic_compositions(new_reactants) != add_atomic_compositions(new_products):
+				continue
 			if 1 <= len(new_reactants) <= max_reaction_complexity and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
 				reactants_str = '.'.join(sorted(new_reactants))
 				products_str = '.'.join(sorted(new_products))
