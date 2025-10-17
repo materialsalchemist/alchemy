@@ -8,8 +8,8 @@ space = ReactionSpace(
 		custom_reactants_csv="test_reactants.csv",
 		output_dir="test_CCCC", 
 		n_workers=cpu_count(),
-		num_generations=2,
-		max_reaction_complexity=4,
+		num_generations=3,
+		max_reaction_complexity=10,
 		g05_method='recombination',
 		require_custom_reactant=False
 	)

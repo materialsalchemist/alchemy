@@ -5,7 +5,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module='rxnmapper')
 from rxnmapper import RXNMapper
 
-from .utils import canonicalize_smiles, canonicalize_smiles_list, add_atomic_compositions
+from .utils import canonicalize_smiles, canonicalize_smiles_list, add_atomic_compositions, verify_reaction
 
 # Suppress verbose RDKit logging
 RDLogger.DisableLog('rdApp.*')
@@ -254,7 +254,7 @@ def worker_generate_new_reactions_g1(reaction_pair: Tuple[str, str]) -> List[str
 
 			r_cans = canonicalize_smiles(parents[0])
 			p_cans = canonicalize_smiles(parents[1])
-
+			
 			if r_cans != p_cans:
 				reaction_smi = f"{r_cans}>>{p_cans}"
 				new_reactions.append(reaction_smi)
@@ -286,8 +286,8 @@ def worker_generate_new_reactions_g1(reaction_pair: Tuple[str, str]) -> List[str
 				# print(unique_frag1, unique_frag2)
 				# print(reactants, products)
 				# print(r1_str, r2_str)
-
-				if reactants != products:
+				
+				if verify_reaction(reactants, products):
 					reactants_str = '.'.join(reactants)
 					products_str = '.'.join(products)
 					reaction_smi = f"{reactants_str}>>{products_str}"
@@ -332,7 +332,7 @@ def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_rea
 			new_reactants = canonicalize_smiles_list(list(new_reactants))
 			new_products = canonicalize_smiles_list(list(new_products))
 
-			if add_atomic_compositions(new_reactants) != add_atomic_compositions(new_products):
+			if not verify_reaction(new_reactants, new_products):
 				continue
 			
 			if 1 <= len(new_reactants) <= max_reaction_complexity and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
@@ -357,7 +357,7 @@ def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_rea
 			new_reactants = canonicalize_smiles_list(list(new_reactants))
 			new_products = canonicalize_smiles_list(list(new_products))
 			
-			if add_atomic_compositions(new_reactants) != add_atomic_compositions(new_products):
+			if not verify_reaction(new_reactants, new_products):
 				continue
 			if 1 <= len(new_reactants) <= max_reaction_complexity and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
 				reactants_str = '.'.join(sorted(new_reactants))
@@ -378,7 +378,7 @@ def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_rea
 
 			new_reactants = canonicalize_smiles_list(list(new_reactants))
 			new_products = canonicalize_smiles_list(list(new_products))
-			if add_atomic_compositions(new_reactants) != add_atomic_compositions(new_products):
+			if not verify_reaction(new_reactants, new_products):
 				continue
 			if 1 <= len(new_reactants) <= max_reaction_complexity and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
 				reactants_str = '.'.join(sorted(new_reactants))

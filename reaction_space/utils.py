@@ -60,3 +60,18 @@ def add_atomic_compositions(smiles_list: List[str]) -> Dict[str, int]:
 			total_counts[sym] = total_counts.get(sym, 0) + 1
 
 	return total_counts
+
+def verify_reaction(reactants: List[str], products: List[str]) -> bool:
+	"""Verify if a reaction is valid based on atomic composition and overlap.
+
+	Returns True if the reaction is valid (same atomic composition and no overlap
+	between reactants and products), otherwise returns False.
+	"""
+
+	if add_atomic_compositions(reactants) != add_atomic_compositions(products):
+		return False
+
+	if len(set(reactants).intersection(set(products))) != 0:
+		return False
+
+	return True
