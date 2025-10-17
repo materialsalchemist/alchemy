@@ -25,10 +25,9 @@ def mol_to_explicit_smiles(mol, canonical=True) -> str:
 
 def canonicalize_smiles(s):
 	mol = Chem.MolFromSmiles(s)
-
 	if mol is None:
 		return s
-
+	Chem.SanitizeMol(mol)  # Ensure the molecule is sanitized
 	return mol_to_explicit_smiles(mol) if mol else smi
 
 def canonicalize_smiles_list(smiles_list):

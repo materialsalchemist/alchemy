@@ -212,13 +212,24 @@ class ReactionSpace:
 							value = json.dumps({"smi": reaction_smi, "gen": "G0"}).encode('utf-8')
 							q.put((key, value))
 
+						# Add the addition reaction: A + B -> C
+						reaction_smi = f"{f1}.{f2}>>{parent_smi}"
+
+						if reaction_smi not in all_reactions_written:
+							all_reactions_written.add(reaction_smi)
+							g0_reactions.append(reaction_smi)
+
+							key = hashlib.sha256(reaction_smi.encode('utf-8')).hexdigest().encode('utf-8')
+							value = json.dumps({"smi": reaction_smi, "gen": "G0"}).encode('utf-8')
+							q.put((key, value))
+
 			q.put(None)
 			writer.join()
 
 		click.secho(f"Found {len(g0_reactions):,} unique G0 reactions.", fg="green")
 		all_reactions_written.update(g0_reactions)
 		current_generation_reactions = g0_reactions
-		print(g0_reactions)
+		# print(g0_reactions)
 
 		g0_fragments = set()
 		for rxn_smi in g0_reactions:
@@ -337,7 +348,7 @@ class ReactionSpace:
 			click.secho(f"Found {len(g1_reactions):,} unique G1 reactions.", fg="green")
 			all_reactions_written.update(g1_reactions)
 			current_generation_reactions = g1_reactions
-			print(g1_reactions)
+			# print(g1_reactions)
 
 		# --- Generation 2+: Higher-order reactions ---
 		for gen in range(2, self.num_generations + 1):
@@ -391,7 +402,7 @@ class ReactionSpace:
 
 			all_reactions_written.update(next_gen_reactions)
 			current_generation_reactions = next_gen_reactions
-			print(next_gen_reactions)
+			# print(next_gen_reactions)
 
 		click.secho(f"\n--- Finalizing ---", bold=True)
 		click.secho(f"Total unique reaction candidates considered: {len(all_reactions_written):,}")
