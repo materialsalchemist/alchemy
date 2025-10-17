@@ -332,7 +332,7 @@ def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_rea
 			new_reactants = canonicalize_smiles_list(list(new_reactants))
 			new_products = canonicalize_smiles_list(list(new_products))
 			
-			if 1 <= len(new_reactants) <= 3 and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
+			if 1 <= len(new_reactants) <= max_reaction_complexity and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
 				reactants_str = '.'.join(sorted(new_reactants))
 				products_str = '.'.join(sorted(new_products))
 				reaction_smi = f"{reactants_str}>>{products_str}"
@@ -354,7 +354,7 @@ def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_rea
 			new_reactants = canonicalize_smiles_list(list(new_reactants))
 			new_products = canonicalize_smiles_list(list(new_products))
 			
-			if 1 <= len(new_reactants) <= 3 and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
+			if 1 <= len(new_reactants) <= max_reaction_complexity and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
 				reactants_str = '.'.join(sorted(new_reactants))
 				products_str = '.'.join(sorted(new_products))
 				reaction_smi = f"{reactants_str}>>{products_str}"
@@ -374,7 +374,7 @@ def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_rea
 			new_reactants = canonicalize_smiles_list(list(new_reactants))
 			new_products = canonicalize_smiles_list(list(new_products))
 			
-			if 1 <= len(new_reactants) <= 3 and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
+			if 1 <= len(new_reactants) <= max_reaction_complexity and 1 <= len(new_products) <= max_reaction_complexity and new_reactants != new_products:
 				reactants_str = '.'.join(sorted(new_reactants))
 				products_str = '.'.join(sorted(new_products))
 				reaction_smi = f"{reactants_str}>>{products_str}"
@@ -390,7 +390,7 @@ rxn_mapper_instance = None
 
 def worker_verify_reaction_batch(
 	reaction_smi_bytes_batch: List[bytes], 
-	confidence_threshold: float = 0.0,
+	confidence_threshold: float = 0.9,
 ) -> List[str]:
 	"""
 	Worker function to verify a BATCH of reaction SMILES.
