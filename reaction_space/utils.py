@@ -1,5 +1,6 @@
 from typing import Set, Tuple, List, Dict
 from rdkit import Chem, RDLogger
+from collections import Counter
 
 import logging
 import warnings
@@ -74,3 +75,43 @@ def verify_reaction(reactants: List[str], products: List[str]) -> bool:
 		return False
 
 	return True
+
+
+
+def mol_from_smiles_with_H(smiles: str) -> Chem.Mol:
+    """Parse SMILES, sanitize, and make hydrogens explicit."""
+    smiles = (smiles or "").strip()
+    if not smiles:
+        raise ValueError("Empty SMILES")
+
+    mol = Chem.MolFromSmiles(smiles, sanitize=True)
+    if mol is None:
+        raise ValueError(f"Invalid SMILES: {smiles}")
+
+    # Remove atom mapping if present
+    for a in mol.GetAtoms():
+        if a.HasProp("molAtomMapNumber"):
+            a.ClearProp("molAtomMapNumber")
+
+    # IMPORTANT: make implicit H atoms explicit
+    mol = Chem.AddHs(mol)
+    return mol
+
+
+def element_counts(side_smiles: str) -> Counter:
+    """Count atoms by element (including H) on one side of a reaction."""
+    total = Counter()
+    side_smiles = (side_smiles or "").strip()
+    if not side_smiles:
+        return total
+
+    for part in side_smiles.split("."):
+        part = part.strip()
+        if not part:
+            continue
+        mol = mol_from_smiles_with_H(part)
+        for atom in mol.GetAtoms():
+            total[atom.GetSymbol()] += 1
+
+    return total
+

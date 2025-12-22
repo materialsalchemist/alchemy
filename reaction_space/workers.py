@@ -2,7 +2,7 @@ from typing import Set, Tuple, List
 from rdkit import Chem, RDLogger
 import logging
 import warnings
-
+from reaction_space.utils import element_counts
 warnings.filterwarnings("ignore", category=UserWarning, module="rxnmapper")
 from rxnmapper import RXNMapper
 
@@ -373,8 +373,10 @@ def worker_generate_higher_gen_reactions(
                 reactants_str = ".".join(sorted(new_reactants))
                 products_str = ".".join(sorted(new_products))
                 reaction_smi = f"{reactants_str}>>{products_str}"
-
-                new_reactions.append(reaction_smi)
+                r = element_counts(reactants_str)
+                p = element_counts(products_str)
+                if r == p:
+                   new_reactions.append(reaction_smi)
 
         # Case 2: Product of r2 is reactant of r1
         # A + B -> C + D and C -> E + F creates A + B + E -> D + F
@@ -401,8 +403,10 @@ def worker_generate_higher_gen_reactions(
                 reactants_str = ".".join(sorted(new_reactants))
                 products_str = ".".join(sorted(new_products))
                 reaction_smi = f"{reactants_str}>>{products_str}"
-
-                new_reactions.append(reaction_smi)
+                r = element_counts(reactants_str)
+                p = element_counts(products_str)
+                if r == p:
+                    new_reactions.append(reaction_smi)
 
         # Case 3: Reactants share species (parallel reactions with common reactant)
         # A + B -> C + D and A + E -> F + G creates B + E -> C + D + F + G (removing A)
@@ -426,8 +430,10 @@ def worker_generate_higher_gen_reactions(
                 reactants_str = ".".join(sorted(new_reactants))
                 products_str = ".".join(sorted(new_products))
                 reaction_smi = f"{reactants_str}>>{products_str}"
-
-                new_reactions.append(reaction_smi)
+                r = element_counts(reactants_str)
+                p = element_counts(products_str)
+                if r == p:
+                    new_reactions.append(reaction_smi)
 
         return new_reactions
 
@@ -485,19 +491,19 @@ def worker_verify_reaction_batch(
         return []
 
     # try:
-    # 	results = rxn_mapper_instance.get_attention_guided_atom_maps(reactions_to_map)
+    #     results = rxn_mapper_instance.get_attention_guided_atom_maps(reactions_to_map)
 
-    # 	for original_smi, gen, result in zip(reactions_to_map, reactions_gen, results):
-    # 		confidence = result.get('confidence', 0.0)
-    # 		mapped_rxn = result.get('mapped_rxn', "")
+    #     for original_smi, gen, result in zip(reactions_to_map, reactions_gen, results):
+    #         confidence = result.get('confidence', 0.0)
+    #         mapped_rxn = result.get('mapped_rxn', "")
 
-    # 		if confidence >= confidence_threshold:
-    # 			canonical_form = original_reactions_map.get(original_smi)
-    # 			if canonical_form:
-    # 				valid_reactions.append((canonical_form, gen))
+    #         if confidence >= confidence_threshold:
+    #             canonical_form = original_reactions_map.get(original_smi)
+    #             if canonical_form:
+    #                 valid_reactions.append((canonical_form, gen))
 
     # except Exception as e:
-    # 	logging.warning(f"rxnmapper failed for a batch: {e}")
+    #     logging.warning(f"rxnmapper failed for a batch: {e}")
 
     for original_smi, gen in zip(reactions_to_map, reactions_gen):
         canonical_form = original_reactions_map.get(original_smi)
