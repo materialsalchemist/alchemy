@@ -3,6 +3,7 @@ from rdkit import Chem, RDLogger
 import logging
 import warnings
 from reaction_space.utils import element_counts
+
 warnings.filterwarnings("ignore", category=UserWarning, module="rxnmapper")
 from rxnmapper import RXNMapper
 
@@ -138,7 +139,10 @@ def worker_systematic_recombination(reactants: Tuple[str, str]) -> List[str]:
                 reacts = sorted(canonicalize_smiles_list([g0_frag_smi, custom_mol_smi]))
                 prods = sorted(canonicalize_smiles_list([new_mol_A, f3_smi]))
                 if reacts != prods:
-                    new_reactions.append(f"{'.'.join(reacts)}>>{'.'.join(prods)}")
+                    r = element_counts(reacts)
+                    p = element_counts(prods)
+                    if r == p:
+                        new_reactions.append(f"{'.'.join(reacts)}>>{'.'.join(prods)}")
 
             # Reaction B: Combine G0 fragment with f3, leaving f2
             new_mol_B = combine_fragments(g0_frag_mol, f3_mol)
@@ -146,7 +150,10 @@ def worker_systematic_recombination(reactants: Tuple[str, str]) -> List[str]:
                 reacts = sorted(canonicalize_smiles_list([g0_frag_smi, custom_mol_smi]))
                 prods = sorted(canonicalize_smiles_list([new_mol_B, f2_smi]))
                 if reacts != prods:
-                    new_reactions.append(f"{'.'.join(reacts)}>>{'.'.join(prods)}")
+                    r = element_counts(reacts)
+                    p = element_counts(prods)
+                    if r == p:
+                        new_reactions.append(f"{'.'.join(reacts)}>>{'.'.join(prods)}")
 
     except Exception as e:
         logging.warning(f"Error in recombination worker for {reactants}: {e}")
@@ -231,7 +238,10 @@ def worker_radical_addition(reactants: Tuple[str, str]) -> List[str]:
                     # Create canonical reaction SMILES
                     reacts_smi = ".".join(sorted([g0_frag_smi, custom_mol_smi]))
                     reaction = f"{reacts_smi}>>{product_smi}"
-                    new_reactions.append(reaction)
+                    r = element_counts(reacts_smi)
+                    p = element_counts(product_smi)
+                    if r == p:
+                        new_reactions.append(reaction)
                 except Exception:
                     continue
 
@@ -282,7 +292,10 @@ def worker_generate_new_reactions_g1(reaction_pair: Tuple[str, str]) -> List[str
             r_cans = canonicalize_smiles(parents[0])
             p_cans = canonicalize_smiles(parents[1])
 
-            if r_cans != p_cans:
+            r = element_counts(r_cans)
+            p = element_counts(p_cans)
+
+            if r_cans != p_cans and r == p:
                 reaction_smi = f"{r_cans}>>{p_cans}"
                 new_reactions.append(reaction_smi)
 
@@ -319,7 +332,10 @@ def worker_generate_new_reactions_g1(reaction_pair: Tuple[str, str]) -> List[str
                     products_str = ".".join(products)
                     reaction_smi = f"{reactants_str}>>{products_str}"
 
-                    new_reactions.append(reaction_smi)
+                    r = element_counts(reactants_str)
+                    p = element_counts(products_str)
+                    if r == p:
+                        new_reactions.append(reaction_smi)
 
         return new_reactions
 
@@ -376,7 +392,7 @@ def worker_generate_higher_gen_reactions(
                 r = element_counts(reactants_str)
                 p = element_counts(products_str)
                 if r == p:
-                   new_reactions.append(reaction_smi)
+                    new_reactions.append(reaction_smi)
 
         # Case 2: Product of r2 is reactant of r1
         # A + B -> C + D and C -> E + F creates A + B + E -> D + F

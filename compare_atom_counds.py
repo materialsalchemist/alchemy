@@ -19,6 +19,7 @@ def compare_reaction(reactants: str, products: str):
     balanced = (r == p)
 
     return {
+        "reaction": f"{reactants}>>{products}",
         "reactant_total_atoms": sum(r.values()),
         "product_total_atoms": sum(p.values()),
         "balanced_by_elements": balanced,

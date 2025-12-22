@@ -16,6 +16,7 @@ import json
 import math
 from rdkit import Chem
 from rdkit.Chem import AllChem, Draw
+from reaction_space.utils import element_counts
 
 from .workers import (
     get_dissociation_fragments,
@@ -239,8 +240,9 @@ class ReactionSpace:
                             continue
 
                         reaction_smi = f"{parent_smi}>>{f1}.{f2}"
-
-                        if reaction_smi not in all_reactions_written:
+                        r = element_counts(parent_smi)
+                        p = element_counts(f"{f1}.{f2}")
+                        if reaction_smi not in all_reactions_written and p == r:
                             all_reactions_written.add(reaction_smi)
                             g0_reactions.append(reaction_smi)
 
@@ -257,7 +259,9 @@ class ReactionSpace:
                         # Add the addition reaction: A + B -> C
                         reaction_smi = f"{f1}.{f2}>>{parent_smi}"
 
-                        if reaction_smi not in all_reactions_written:
+                        r = element_counts(parent_smi)
+                        p = element_counts(f"{f1}.{f2}")
+                        if reaction_smi not in all_reactions_written and p == r:
                             all_reactions_written.add(reaction_smi)
                             g0_reactions.append(reaction_smi)
 
