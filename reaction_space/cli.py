@@ -15,21 +15,6 @@ def common_options(func):
 		 default="chemical_space_results/molecules.csv", show_default=True,
 		 help="Input CSV file with molecules and atom counts.",
 	 )
-	@click.option("-cr", "--custom-reactants", type=click.Path(exists=True, dir_okay=False), default=None, help="[G0.5] Optional CSV with SMILES for custom reactions.")
-	@click.option(
-		"--g05-method", 
-		type=click.Choice(['recombination', 'addition'], case_sensitive=False), 
-		default='recombination', 
-		show_default=True, 
-		help="[G0.5] Method for reacting G0 fragments with custom molecules."
-	)
-	@click.option(
-		"--require-custom-reactant",
-		is_flag=True,
-		default=False,
-		show_default=True,
-		help="[G1+] Only use reactions from G0.5 for subsequent generations.",
-	)
 	@click.option(
 		"-o", "--output-dir", type=click.Path(file_okay=False),
 		default="reaction_space_results", show_default=True,
@@ -55,49 +40,41 @@ def common_options(func):
 
 @reaction_cli.command()
 @common_options
-def explore(input_csv, output_dir, workers, generations, max_complexity, custom_reactants, g05_method, require_custom_reactant):
+def explore(input_csv, output_dir, workers, generations, max_complexity):
 	"""Run the full workflow: find candidates, verify, and export results."""
 	space = ReactionSpace(
 		input_csv=input_csv, 
-		custom_reactants_csv=custom_reactants,
 		output_dir=output_dir, 
 		n_workers=workers,
 		num_generations=generations,
 		max_reaction_complexity=max_complexity,
-		g05_method=g05_method,
-		require_custom_reactant=require_custom_reactant
 	)
 	space.explore()
 
 @reaction_cli.command()
 @common_options
-def find_candidates(input_csv, output_dir, workers, generations, max_complexity, custom_reactants, g05_method, require_custom_reactant):
+def find_candidates(input_csv, output_dir, workers, generations, max_complexity):
 	"""Step 1: Generate reaction candidates from initial molecules."""
 	space = ReactionSpace(
 		input_csv=input_csv, 
-		custom_reactants_csv=custom_reactants,
 		output_dir=output_dir, 
 		n_workers=workers,
 		num_generations=generations,
 		max_reaction_complexity=max_complexity,
-		g05_method=g05_method,
-		require_custom_reactant=require_custom_reactant
 	)
 	space.find_reaction_candidates()
 
 @reaction_cli.command()
 @common_options
-def verify_reactions(input_csv, output_dir, workers, generations, max_complexity, custom_reactants, g05_method, require_custom_reactant):
+def verify_reactions(input_csv, output_dir, workers, generations, max_complexity):
 	"""Step 2: Verify candidates from DB using RDKit."""
 	space = ReactionSpace(
 		input_csv=input_csv, 
-		custom_reactants_csv=custom_reactants,
 		output_dir=output_dir, 
 		n_workers=workers,
 		num_generations=generations,
 		max_reaction_complexity=max_complexity,
-		g05_method=g05_method,
-		require_custom_reactant=require_custom_reactant
+		
 	)
 	space.verify_reactions()
 

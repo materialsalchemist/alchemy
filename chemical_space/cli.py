@@ -14,6 +14,7 @@ def chemical_cli():
 def common_options(f):
 	@wraps(f)
 	@click.option("-n", "--max-atoms", type=int, default=3, show_default=True, help="Maximum number of heavy atoms.")
+	@click.option("-s", "--smiles", type=str, default=None, show_default=False, help="Input molecule in SMILES format.")
 	@click.option("-a", "--atoms", multiple=True, default=['C', 'O', 'H'], show_default=True, help="Heavy atoms to include.")
 	@click.option("-w", "--workers", type=int, default=cpu_count(), show_default=True, help="Number of worker processes.")
 	@click.option("-o", "--output-dir", type=click.Path(file_okay=False), default="chemical_space_results", show_default=True, help="Directory to save all results.")
@@ -24,10 +25,11 @@ def common_options(f):
 
 @chemical_cli.command()
 @common_options
-def explore(max_atoms, atoms, workers, output_dir):
+def explore(max_atoms, smiles, atoms, workers, output_dir):
 	"""Run the full workflow: generate, build, and export."""
 	space = ChemicalSpace(
 		atoms=frozenset(atoms),
+		smiles=smiles,
 		max_atoms=max_atoms,
 		n_workers=workers,
 		output_dir=output_dir
@@ -36,10 +38,11 @@ def explore(max_atoms, atoms, workers, output_dir):
 
 @chemical_cli.command()
 @common_options
-def generate_compositions(max_atoms, atoms, workers, output_dir):
+def generate_compositions(max_atoms, smiles, atoms, workers, output_dir):
 	"""Stage 1: Generate and save plausible compositions."""
 	space = ChemicalSpace(
 		atoms=frozenset(atoms),
+		smiles=smiles,
 		max_atoms=max_atoms,
 		n_workers=workers,
 		output_dir=output_dir
@@ -48,10 +51,11 @@ def generate_compositions(max_atoms, atoms, workers, output_dir):
 
 @chemical_cli.command()
 @common_options
-def build_molecules(max_atoms, atoms, workers, output_dir):
+def build_molecules(max_atoms, smiles, atoms, workers, output_dir):
 	"""Stage 2: Build molecules from existing compositions."""
 	space = ChemicalSpace(
 		atoms=frozenset(atoms),
+		smiles=smiles,
 		max_atoms=max_atoms,
 		n_workers=workers,
 		output_dir=output_dir
