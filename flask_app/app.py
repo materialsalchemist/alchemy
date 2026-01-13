@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 import json
+import lmdb
 from flask import (
     Flask,
     render_template,
@@ -24,6 +25,8 @@ OBABEL_IMAGES_PATH = os.path.join(CHEMICAL_SPACE_RESULTS_PATH, "molecule_images_
 REACTION_NETWORK_JSON_PATH = os.path.join(
     REACTION_SPACE_RESULTS_PATH, "reaction_network.json"
 )
+REACTION_IMAGES_PATH = os.path.join(REACTION_SPACE_RESULTS_PATH, "reaction_images")
+
 
 app = Flask(__name__)
 app.config["CHEMICAL_SPACE_RESULTS_PATH"] = CHEMICAL_SPACE_RESULTS_PATH
@@ -194,7 +197,40 @@ def molecules_page():
 
 @app.route("/reactions")
 def reactions_page():
-    return render_template("reactions.html")
+    reactions_lmdb_path = os.path.join(REACTION_SPACE_RESULTS_PATH, "reactions.lmdb")
+    reactions_csv_path = os.path.join(REACTION_SPACE_RESULTS_PATH, "reactions.csv")
+
+    reactions = []
+    if os.path.exists(reactions_lmdb_path):
+        app.logger.info(f"Loading reactions from LMDB: {reactions_lmdb_path}")
+        env = lmdb.open(reactions_lmdb_path, readonly=True, lock=False)
+        with env.begin() as txn:
+            for i, (key, value) in enumerate(txn.cursor()):
+                try:
+                    value_data = json.loads(value.decode("utf-8"))
+                    reaction_smarts = value_data["smi"]
+                    reactants, products = reaction_smarts.split(">>")
+                    
+                    reaction_item = {
+                        "reactants": reactants,
+                        "products": products,
+                        "image_path": f"reaction_images/reaction_{i}.png",
+                    }
+                    reactions.append(reaction_item)
+                except (json.JSONDecodeError, KeyError, ValueError) as e:
+                    app.logger.warning(f"Skipping malformed reaction in LMDB: {e}")
+                    continue
+        env.close()
+    elif os.path.exists(reactions_csv_path):
+        app.logger.info(f"Loading reactions from CSV: {reactions_csv_path}")
+        df_react = pd.read_csv(reactions_csv_path)
+        reactions = df_react.to_dict('records')
+        for i, reaction in enumerate(reactions):
+            reaction['image_path'] = f"reaction_images/reaction_{i}.png"
+    else:
+        app.logger.warning("No reaction file (LMDB or CSV) found.")
+
+    return render_template("reactions.html", reactions=reactions)
 
 
 @app.route("/reaction_network_data")
@@ -222,6 +258,15 @@ def molecule_image(image_type, filename):
         return "Image directory not found", 404
 
     return send_from_directory(directory, filename)
+
+
+@app.route("/reaction_image/<filename>")
+def reaction_image(filename):
+    if not os.path.exists(REACTION_IMAGES_PATH):
+        app.logger.error(f"Image directory not found: {REACTION_IMAGES_PATH}")
+        return "Image directory not found", 404
+
+    return send_from_directory(REACTION_IMAGES_PATH, filename)
 
 
 if __name__ == "__main__":

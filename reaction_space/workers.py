@@ -527,3 +527,39 @@ def worker_verify_reaction_batch(
             valid_reactions.append((canonical_form, gen))
 
     return valid_reactions
+
+
+def worker_process_reaction_for_structures(reaction_data: Tuple[bytes, bytes]) -> Tuple[bytes, bytes]:
+    """
+    Worker function to generate and serialize 3D structures for all molecules in a reaction.
+    """
+    from .structure import generate_optimized_structure, atoms_to_json
+    import json
+
+    key, value = reaction_data
+    try:
+        data = json.loads(value.decode('utf-8'))
+        reaction_smi = data['smi']
+        reactants_smi, products_smi = reaction_smi.split('>>')
+        
+        result_data = {'reactants': [], 'products': []}
+
+        # Process reactants
+        for smi in reactants_smi.split('.'):
+            if not smi: continue
+            atoms = generate_optimized_structure(smi)
+            atoms_json = atoms_to_json(atoms)
+            result_data['reactants'].append(atoms_json)
+
+        # Process products
+        for smi in products_smi.split('.'):
+            if not smi: continue
+            atoms = generate_optimized_structure(smi)
+            atoms_json = atoms_to_json(atoms)
+            result_data['products'].append(atoms_json)
+        
+        return key, json.dumps(result_data).encode('utf-8')
+
+    except Exception as e:
+        logging.warning(f"Structure generation failed for reaction {key.decode()}: {e}")
+        return key, None

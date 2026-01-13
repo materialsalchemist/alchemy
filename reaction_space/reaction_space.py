@@ -14,6 +14,7 @@ from typing import List, Dict, Tuple
 import networkx as nx
 import json
 import math
+import shutil
 from rdkit import Chem
 from rdkit.Chem import AllChem, Draw
 from reaction_space.utils import element_counts
@@ -25,6 +26,7 @@ from .workers import (
     worker_generate_new_reactions_g1,
     worker_generate_higher_gen_reactions,
     worker_verify_reaction_batch,
+    worker_process_reaction_for_structures,
 )
 from .utils import canonicalize_smiles, canonicalize_smiles_list
 
@@ -684,6 +686,48 @@ class ReactionSpace:
             fg="green",
         )
 
+    def export_to_lmdb(self, filename: str = "reactions.lmdb"):
+        """Exports the final verified reactions from the DB to a new, clean LMDB file."""
+        click.secho("\n--- Step 3d: Exporting Verified Reactions to LMDB ---", bold=True)
+
+        source_db_path = self._db_paths["verified"]
+        output_db_path = os.path.join(self.output_dir, filename)
+
+        if not os.path.exists(source_db_path):
+            click.secho(
+                "Verified reactions database not found. Nothing to export.", fg="red"
+            )
+            return
+
+        if os.path.exists(output_db_path):
+            click.secho(f"Output database {output_db_path} already exists. Removing.", fg="yellow")
+            shutil.rmtree(output_db_path)
+
+        src_env = lmdb.open(source_db_path, readonly=True)
+        num_reactions = src_env.stat()["entries"]
+
+        if num_reactions == 0:
+            click.secho("No verified reactions to export.", fg="yellow")
+            src_env.close()
+            return
+        
+        dst_env = lmdb.open(output_db_path, map_size=src_env.info()['map_size'])
+
+        with src_env.begin() as src_txn, dst_env.begin(write=True) as dst_txn:
+            cursor = src_txn.cursor()
+            for key, value in tqdm(
+                cursor, total=num_reactions, desc="Exporting to LMDB"
+            ):
+                dst_txn.put(key, value)
+        
+        src_env.close()
+        dst_env.close()
+
+        click.secho(
+            f"Successfully exported {num_reactions} reactions to {output_db_path}",
+            fg="green",
+        )
+
     def export_images(self, image_dir: str = "reaction_images"):
         """Exports verified reactions from the database to PNG images."""
         click.secho("\n--- Step 3c: Exporting Reactions to Images ---", bold=True)
@@ -744,4 +788,55 @@ class ReactionSpace:
         self.find_reaction_candidates()
         self.verify_reactions()
         self.export_to_csv()
+        self.export_to_lmdb()
         self.generate_reaction_network_graph()
+
+    def generate_structures(self, input_db_path: str, output_db_path: str):
+        """
+        Generates optimized 3D structures for all molecules in a given reaction database
+        and saves them to a new LMDB database.
+        """
+        click.secho(f"\n--- Generating 3D Structures for Reactions ---", bold=True)
+
+        if not os.path.exists(input_db_path):
+            click.secho(f"Error: Input database not found at {input_db_path}", fg="red")
+            return
+        
+        try:
+            # Check if dependencies are present
+            from tblite.ase import TBLite
+            from ase import Atoms
+        except ImportError as e:
+            click.secho(f"Error: Missing dependency for structure generation -> {e.name}", fg="red")
+            click.secho("\nPlease install 'ase' and 'tblite[ase]' to use this feature.", fg="red")
+            return
+
+        if os.path.exists(output_db_path):
+            click.secho(f"Output database {output_db_path} already exists. Removing.", fg="yellow")
+            shutil.rmtree(output_db_path)
+
+        in_env = lmdb.open(input_db_path, readonly=True, lock=False)
+        num_reactions = in_env.stat()['entries']
+
+        # Setup writer process for the output LMDB
+        q = Queue(maxsize=self.n_workers * 2)
+        writer = Process(target=self._lmdb_writer, args=(q, output_db_path))
+        writer.start()
+
+        with in_env.begin() as txn, Pool(self.n_workers) as pool:
+            cursor = txn.cursor()
+            results_iterator = pool.imap_unordered(
+                worker_process_reaction_for_structures, 
+                cursor,
+                chunksize=1  # Structure generation can be slow
+            )
+
+            for key, result_value in tqdm(results_iterator, total=num_reactions, desc="Generating Structures"):
+                if result_value:
+                    q.put((key, result_value))
+        
+        q.put(None)  # Signal writer to finish
+        writer.join()
+        in_env.close()
+
+        click.secho(f"\nSuccessfully generated and saved structures to {output_db_path}", fg="green")

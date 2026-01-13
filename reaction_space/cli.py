@@ -100,3 +100,21 @@ def export_images(output_dir):
 	"""Step 3c: Export verified reactions from database to PNG images."""
 	space = ReactionSpace(input_csv="", output_dir=output_dir) # input_csv not needed for export
 	space.export_images()
+
+@reaction_cli.command()
+@click.option("-o", "--output-dir", type=click.Path(file_okay=False), default="reaction_space_results", show_default=True, help="Directory containing the reaction databases.")
+@click.option("-f", "--filename", type=str, default="reactions.lmdb", show_default=True, help="Output LMDB filename.")
+def export_lmdb(output_dir, filename):
+	"""Step 3d: Export verified reactions to a new LMDB database."""
+	space = ReactionSpace(input_csv="", output_dir=output_dir) # input_csv not needed for export
+	space.export_to_lmdb(filename=filename)
+
+@reaction_cli.command()
+@click.option("--input-db", required=True, help="Input reactions LMDB (e.g., reaction_space_results/reactions.lmdb).")
+@click.option("--output-db", required=True, help="Output LMDB for storing ASE Atoms structures.")
+@click.option("-w", "--workers", type=int, default=cpu_count(), show_default=True, help="Number of worker processes.")
+def generate_structures(input_db, output_db, workers):
+	"""Generate optimized 3D structures for all molecules in a reaction database."""
+	# We need to instantiate ReactionSpace to use its worker/LMDB infrastructure
+	space = ReactionSpace(input_csv="", output_dir=".", n_workers=workers)
+	space.generate_structures(input_db, output_db)
