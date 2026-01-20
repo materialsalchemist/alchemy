@@ -11,17 +11,34 @@ from tqdm import tqdm
 import lmdb
 import pickle
 import pandas as pd
-from rdkit.Chem import Draw
-import subprocess
+from rdkit.Chem import Draw, AllChem
 import click
 from typing import List, Tuple, Dict, FrozenSet, Iterator
 from rdkit import Chem
 import itertools
 from collections import defaultdict
 from typing import DefaultDict, Optional
+from openbabel import pybel
+from io import StringIO
+import warnings
+
+try:
+    from tblite.ase import TBLite
+    from ase.optimize import LBFGS
+    from ase.io import read as ase_read
+    TBLITE_AVAILABLE = True
+except ImportError as e:
+    TBLITE_AVAILABLE = False
+    TBLITE_IMPORT_ERROR = e
+    TBLite, LBFGS, ase_read = None, None, None
+
 
 from .workers import worker_process_compositions, worker_build_molecule
 from .cleave import enumerate_cleavage_products
+
+
+# Suppress specific warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="openbabel")
 
 
 @dataclass
@@ -259,20 +276,6 @@ class ChemicalSpace:
         df.to_csv(output_csv_path, index=False)
         click.secho(f"Export complete. There are {len(df)} molecules.", fg="green")
 
-    def _check_obabel_installed(self):
-        """Checks if Open Babel is installed and executable."""
-        try:
-            # Use -V as it's a common way to get version and confirm installation
-            subprocess.run(["obabel", "-V"], capture_output=True, text=True, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            click.secho(
-                "Open Babel (obabel) is not installed or not found in PATH. "
-                "Please install it to use this feature.",
-                fg="red",
-                err=True,
-            )
-            raise click.exceptions.Exit(1)
-
     def _get_all_smiles_from_db(self) -> List[str]:
         """Collects all unique SMILES strings from the molecule databases."""
         click.secho(
@@ -308,8 +311,6 @@ class ChemicalSpace:
 
     def export_images(self):
         """Exports molecules from DB to PNG (RDKit & OpenBabel)."""
-        self._check_obabel_installed()  # OpenBabel is used for one of the image types
-
         img_dir = os.path.join(self.output_dir, "molecule_images")
         img_obabel_dir = os.path.join(self.output_dir, "molecule_images_obabel")
 
@@ -343,21 +344,13 @@ class ChemicalSpace:
                     )
 
                 # OpenBabel PNG
-                result_obabel_png = subprocess.run(
-                    [
-                        "obabel",
-                        "-:" + smi,
-                        "-O" + os.path.join(img_obabel_dir, f"{mol_filename_base}.png"),
-                    ],
-                    capture_output=True,
-                    text=True,
+                mol = pybel.readstring("smi", smi)
+                mol.draw(
+                    show=False,
+                    filename=os.path.join(img_obabel_dir, f"{mol_filename_base}.png"),
                 )
-                if result_obabel_png.returncode == 0:
-                    total_exported_obabel += 1
-                else:
-                    logging.error(
-                        f"OpenBabel PNG failed for SMILES: {smi} (file: {mol_filename_base}.png). Error: {result_obabel_png.stderr.strip()}"
-                    )
+                total_exported_obabel += 1
+
             except Exception as e:
                 logging.error(
                     f"Generic error processing SMILES for images: {smi} (file base: {mol_filename_base}). Error: {e}"
@@ -372,16 +365,30 @@ class ChemicalSpace:
         else:
             click.secho("\nNo molecules were processed for image export.", fg="yellow")
 
-    def export_xyz(self):
-        """Exports molecules from DB to XYZ files using OpenBabel."""
-        self._check_obabel_installed()
+    def export_xyz(self, method: str = "rdkit", optimize_with_tblite: bool = False) -> Tuple[int, int, List[str], List[str]]:
+        """Exports molecules from DB to XYZ files.
+        Args:
+            method (str): The method to use for 3D coordinate generation.
+                          Options: 'rdkit', 'openbabel'.
+            optimize_with_tblite (bool): If True, optimizes the generated structure with TBLite.
+        Returns:
+            Tuple[int, int, List[str]]: A tuple containing:
+                - total_exported (int): Number of successfully exported XYZ files.
+                - total_failed (int): Number of molecules that failed to export.
+                - failed_xyz_content (List[str]): A list of XYZ content for molecules that failed TBLite optimization.
+                - failed_smiles (List[str]): A list of SMILES for molecules that failed export.
+        """
 
         xyz_dir = os.path.join(self.output_dir, "molecule_xyz")
         os.makedirs(xyz_dir, exist_ok=True)
 
         sorted_smiles = self._get_all_smiles_from_db()
         if not sorted_smiles:
-            return
+            return 0, 0, [], []
+
+        task_desc = f"Exporting XYZ ({method})"
+        if optimize_with_tblite:
+            task_desc += " + TBLite optimization"
 
         click.secho(
             f"\nExporting {len(sorted_smiles)} unique molecules as XYZ files to {xyz_dir}...",
@@ -389,30 +396,84 @@ class ChemicalSpace:
         )
 
         total_exported = 0
-        for i, smi in enumerate(tqdm(sorted_smiles, desc="Exporting XYZ files")):
+        total_failed = 0
+        failed_xyz_content = []
+        failed_smiles = []
+
+        for i, smi in enumerate(tqdm(sorted_smiles, desc=task_desc)):
             mol_filename_base = f"mol_{i}"
-            try:
-                # XYZ
-                result_xyz = subprocess.run(
-                    [
-                        "obabel",
-                        "-:" + smi,
-                        "--gen3D",
-                        "-O" + os.path.join(xyz_dir, f"{mol_filename_base}.xyz"),
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
-                if result_xyz.returncode == 0:
-                    total_exported += 1
-                else:
-                    logging.error(
-                        f"OpenBabel XYZ failed for SMILES: {smi} (file: {mol_filename_base}.xyz). Error: {result_xyz.stderr.strip()}"
-                    )
-            except Exception as e:
-                logging.error(
-                    f"Generic error processing SMILES for XYZ: {smi} (file base: {mol_filename_base}). Error: {e}"
-                )
+            xyz_path = os.path.join(xyz_dir, f"{mol_filename_base}.xyz")
+            xyz_str = ""
+            current_smi_success = False
+
+            # Generate Initial Coordinates
+            if method == "openbabel":
+                try:
+                    mol = pybel.readstring("smi", smi)
+                    mol.make3D()
+                    xyz_str = mol.write("xyz")  # Get string output
+                    current_smi_success = True
+                except Exception as e:
+                    logging.error(f"OpenBabel XYZ generation failed for SMILES: {smi}. Error: {e}")
+            elif method == "rdkit":
+                try:
+                    mol = Chem.MolFromSmiles(smi)
+                    if not mol:
+                        raise ValueError("RDKit could not parse SMILES.")
+                    mol = Chem.AddHs(mol)
+                    AllChem.EmbedMolecule(mol, AllChem.ETKDG())
+                    AllChem.UFFOptimizeMolecule(mol)
+                    xyz_str = Chem.MolToXYZBlock(mol)
+                    current_smi_success = True
+                except Exception as e:
+                    logging.error(f"RDKit XYZ generation failed for SMILES: {smi}. Error: {e}")
+            else:
+                logging.error(f"Unknown XYZ export method: {method}")
+
+            # Optionally Optimize with TBLite
+            if current_smi_success and optimize_with_tblite:
+                if not TBLITE_AVAILABLE:
+                    error_message = f"""
+TBLite optimization is enabled, but the required packages (tblite, ase) were not found.
+
+Please install tblite and its dependencies by running the setup script:
+
+    bash setup_tblite.sh
+
+The script contains the following commands:
+
+    meson setup external/tblite/_build external/tblite -Dpython=true --prefix=$PWD/.venv
+    meson compile -C external/tblite/_build
+    meson install -C external/tblite/_build
+
+If you still encounter issues after running the setup script, you might need to run the following command in your terminal *before* executing the main script:
+
+    export LD_PRELOAD=/usr/lib/libgfortran.so.5
+
+Original import error: {TBLITE_IMPORT_ERROR}
+"""
+                    raise ImportError(error_message)
+                try:
+                    string_io = StringIO(xyz_str)
+                    atoms = ase_read(string_io, format="xyz")
+                    atoms.calc = TBLite()
+                    dyn = LBFGS(atoms)
+                    dyn.run(fmax=0.05)
+
+                    final_xyz_io = StringIO()
+                    atoms.write(final_xyz_io, format="xyz")
+                    xyz_str = final_xyz_io.getvalue()
+                except Exception as e:
+                    logging.warning(f"TBLite optimization failed for {smi}: {e}. Saving unoptimized geometry.")
+                    failed_xyz_content.append(f"SMILES: {smi}\n{xyz_str}")
+
+            if current_smi_success:
+                with open(xyz_path, "w") as f:
+                    f.write(xyz_str)
+                total_exported += 1
+            else:
+                total_failed += 1
+                failed_smiles.append(smi)
 
         if total_exported > 0:
             click.secho(
@@ -421,6 +482,8 @@ class ChemicalSpace:
             )
         else:
             click.secho("\nNo molecules were processed for XYZ export.", fg="yellow")
+
+        return total_exported, total_failed, failed_xyz_content, failed_smiles
 
     def _atom_counts_from_smiles(self, smi: str) -> Optional[Dict[str, int]]:
         """

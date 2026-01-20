@@ -82,7 +82,29 @@ def export_images(max_atoms, output_dir):
 @chemical_cli.command()
 @click.option("-n", "--max-atoms", type=int, default=3, show_default=True, help="Maximum number of heavy atoms in molecules to export XYZ files for.")
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False), default="chemical_space_results", show_default=True, help="Directory containing LMDB results and to save XYZ files.")
-def export_xyz(max_atoms, output_dir):
-	"""Stage 3c: Export molecules from LMDB to XYZ coordinate files using OpenBabel."""
+@click.option(
+    "-m",
+    "--method",
+    type=click.Choice(["rdkit", "openbabel"], case_sensitive=False),
+    default="rdkit",
+    show_default=True,
+    help="Method for initial 3D coordinate generation.",
+)
+@click.option("--optimize-tblite", is_flag=True, default=False, show_default=True, help="Optimize the generated 3D structures with TBLite.")
+def export_xyz(max_atoms, output_dir, method, optimize_tblite):
+	"""Stage 3c: Export molecules from LMDB to XYZ coordinate files."""
 	space = ChemicalSpace(max_atoms=max_atoms, output_dir=output_dir)
-	space.export_xyz()
+	_, total_failed, failed_xyz_content, failed_smiles = space.export_xyz(method=method, optimize_with_tblite=optimize_tblite)
+
+	if total_failed > 0:
+		click.secho(f"{total_failed} molecules failed to generate XYZ files.", fg="yellow")
+
+	if failed_smiles:
+		click.secho("\n--- SMILES of molecules that failed to export ---", bold=True)
+		for smi in failed_smiles:
+			click.echo(smi)
+
+	if failed_xyz_content:
+		click.secho("\n--- Unoptimized geometries for molecules that failed TBLite optimization ---", bold=True)
+		for content in failed_xyz_content:
+			click.echo(content)
