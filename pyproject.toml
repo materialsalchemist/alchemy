@@ -19,6 +19,7 @@ dependencies = [
     "openbabel-wheel>=3.1.1.22",
     "pandas>=2.3.2",
     "rdkit>=2025.3.5",
+    "ruff>=0.14.13",
     "rxnmapper[rdkit]>=0.4.2",
     "scipy>=1.16.1",
     "setuptools>=80.9.0",
@@ -41,9 +42,7 @@ py-modules = ["alchemy"]
 where = ["."]
 
 [tool.ruff]
-line-length = 99
+line-length = 120
 
 [tool.ruff.format]
 indent-style = "tab"
-indent-width = 2
-
