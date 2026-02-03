@@ -460,7 +460,7 @@ class ChemicalSpace:
                 continue
 
             # Canonicalise
-            smi_can = Chem.MolToSmiles(mol, canonical=True)
+            smi_can = Chem.MolToSmiles(mol, canonical=True, allHsExplicit=True)
 
             n_heavy = sum(1 for a in mol.GetAtoms() if a.GetSymbol() != "H")
             self.max_atoms = max(self.max_atoms, n_heavy)

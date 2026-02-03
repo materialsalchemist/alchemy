@@ -14,11 +14,7 @@ Mode = Literal["radical", "cap_h", "ionic"]
 @dataclass(frozen=True)
 class CleavageResult:
     cut_bond_indices: Tuple[int, ...]
-    fragments: Tuple[str, ...]  # canonical SMILES of fragments, sorted
-
-
-def _canonical_smiles(m: Chem.Mol) -> str:
-    return Chem.MolToSmiles(m, canonical=True)
+    fragments: Tuple[str, ...]  # canonical SMILES (explicit H), sorted
 
 
 def _sanitize_lenient(m: Chem.Mol) -> Optional[Chem.Mol]:
@@ -37,17 +33,28 @@ def _sanitize_lenient(m: Chem.Mol) -> Optional[Chem.Mol]:
             return None
 
 
-def _remove_dummies(m: Chem.Mol) -> Chem.Mol:
+def _canonical_smiles_explicit_h(m: Chem.Mol) -> str:
+    """
+    Canonical SMILES with explicit H atoms.
+    """
+    return Chem.MolToSmiles(m, canonical=True, allHsExplicit=True)
+
+
+def _remove_dummies_keep_h(m: Chem.Mol) -> Optional[Chem.Mol]:
+    """
+    Remove FragmentOnBonds dummy atoms ([#0]) but keep *real* H atoms.
+    """
     dummy_q = Chem.MolFromSmarts("[#0]")
-    return Chem.DeleteSubstructs(m, dummy_q)
+    m2 = Chem.DeleteSubstructs(m, dummy_q)
+    return _sanitize_lenient(m2)
 
 
 def _dummies_to_radicals_then_remove(m: Chem.Mol) -> Optional[Chem.Mol]:
     """
     Homolytic cleavage:
       - each cut end gets +1 radical electron
-      - dummies removed
-    Example: "CC" -> "[CH3]" + "[CH3]"
+      - dummy atoms removed
+    Works for both heavy-heavy and heavy-H bonds (when include_h_bonds=True).
     """
     rw = Chem.RWMol(m)
     dummy_idxs = [a.GetIdx() for a in rw.GetAtoms() if a.GetAtomicNum() == 0]
@@ -64,6 +71,7 @@ def _dummies_to_radicals_then_remove(m: Chem.Mol) -> Optional[Chem.Mol]:
         a = rw.GetAtomWithIdx(n_idx)
         a.SetNumRadicalElectrons(a.GetNumRadicalElectrons() + 1)
 
+    # remove dummies
     for d_idx in sorted(dummy_idxs, reverse=True):
         rw.RemoveAtom(d_idx)
 
@@ -75,27 +83,25 @@ def _dummies_cap_h_then_remove(m: Chem.Mol) -> Optional[Chem.Mol]:
     """
     "cap_h" mode:
       - remove dummies
-      - sanitize; RDKit will satisfy valence with implicit H
-    Example: "CC" -> "C" + "C"  (methane + methane)
+      - sanitize; RDKit satisfies valence with implicit H
+      - then AddHs() to make those H explicit atoms
+    NOTE: Cutting X–H bonds in cap_h often returns the parent (chemically expected).
     """
-    m2 = _remove_dummies(m)
-    return _sanitize_lenient(m2)
+    out = _remove_dummies_keep_h(m)
+    if out is None:
+        return None
+    # ensure any implicit H introduced becomes explicit atoms
+    out = Chem.AddHs(out, addCoords=False)
+    return _sanitize_lenient(out)
 
 
 def _dummies_to_ions_then_remove(m: Chem.Mol) -> Optional[Chem.Mol]:
     """
-    Heterolytic ionic cleavage (simple, rule-based):
-      - for each cut, choose a direction to assign charges:
-          * more electronegative side becomes anion (-1)
-          * other side becomes cation (+1)
-        If equal electronegativity, break ties by:
-          higher atomic number -> anion, else lower -> cation
-      - dummies removed
-    Example: "CC" (equal) -> "[CH3+]" + "[CH3-]" (tie-break)
-            "CO" -> "[CH3+]" + "[O-]"
-    NOTE: This is a *heuristic*, not a full chemical ionization model.
+    Heterolytic ionic cleavage (heuristic, EN-based):
+      - more electronegative side becomes anion (-1)
+      - other side becomes cation (+1)
+    Then remove dummies and AddHs to make H explicit.
     """
-    # Pauling-ish EN (minimal set; extend as you like)
     EN = {
         "F": 3.98, "O": 3.44, "Cl": 3.16, "N": 3.04, "Br": 2.96, "I": 2.66,
         "S": 2.58, "C": 2.55, "P": 2.19, "H": 2.20, "Si": 1.90,
@@ -106,61 +112,43 @@ def _dummies_to_ions_then_remove(m: Chem.Mol) -> Optional[Chem.Mol]:
     rw = Chem.RWMol(m)
     dummy_idxs = [a.GetIdx() for a in rw.GetAtoms() if a.GetAtomicNum() == 0]
 
-    # Each dummy has 1 neighbor; each cut generates 2 dummies (one on each side).
-    # We'll decide charge assignment per dummy independently by comparing the neighbor atom
-    # to the neighbor of its "partner" dummy across the same cut.
-    #
-    # Partnering is tricky without bond-annotation, but FragmentOnBonds adds a single bond
-    # between dummy and neighbor; the two dummies from a cut are not connected.
-    # Instead, we pair dummies by their "isotope" label if present (RDKit often sets dummy
-    # atom isotopes for cuts when requested; but default may be 0).
-    #
-    # So we implement a simpler robust approach:
-    #   - for each dummy, assign a provisional preference based on its neighbor EN
-    #   - then for each fragment molecule, net charge will emerge from the per-dummy assignments.
-    #
-    # This yields correct behavior for common polar bonds (C-O, C-N, etc).
-    neighbor_info: List[Tuple[int, str, float, int]] = []
-    # (dummy_idx, neighbor_symbol, neighbor_EN, neighbor_atomicnum)
+    neighbor_info: List[Tuple[int, float]] = []
     for d_idx in dummy_idxs:
         d_atom = rw.GetAtomWithIdx(d_idx)
         nbrs = list(d_atom.GetNeighbors())
         if len(nbrs) != 1:
             return None
         nb = nbrs[0]
-        sym = nb.GetSymbol()
-        en = EN.get(sym, 0.0)
-        neighbor_info.append((d_idx, sym, en, nb.GetAtomicNum()))
+        en = EN.get(nb.GetSymbol(), 0.0)
+        neighbor_info.append((d_idx, en))
 
-    # Decide which dummies should make their neighbor an anion vs cation.
-    # We can't perfectly pair per-cut, so we apply:
-    #   - any dummy whose neighbor is among the highest EN in the molecule gets -1
-    #   - others get +1
-    # This works for typical single polar bond cuts (and is deterministic).
     if not neighbor_info:
         return None
-    max_en = max(en for _, _, en, _ in neighbor_info)
 
-    for d_idx, sym, en, z in neighbor_info:
-        nbr = list(rw.GetAtomWithIdx(d_idx).GetNeighbors())[0]
-        # If EN ties (e.g., C-C), fall back on atomic number tie-break:
+    max_en = max(en for _, en in neighbor_info)
+
+    for d_idx, en in neighbor_info:
+        nb = list(rw.GetAtomWithIdx(d_idx).GetNeighbors())[0]
         if en == max_en and max_en > 0.0:
-            # electronegative side gets negative charge
-            nbr.SetFormalCharge(nbr.GetFormalCharge() - 1)
+            nb.SetFormalCharge(nb.GetFormalCharge() - 1)
         else:
-            # electropositive side gets positive charge
-            nbr.SetFormalCharge(nbr.GetFormalCharge() + 1)
+            nb.SetFormalCharge(nb.GetFormalCharge() + 1)
 
-    # Remove dummies
     for d_idx in sorted(dummy_idxs, reverse=True):
         rw.RemoveAtom(d_idx)
 
     out = rw.GetMol()
+    out = _sanitize_lenient(out)
+    if out is None:
+        return None
+
+    out = Chem.AddHs(out, addCoords=False)
     return _sanitize_lenient(out)
 
 
 def _process_fragment_by_mode(frag: Chem.Mol, mode: Mode) -> Optional[Chem.Mol]:
     if mode == "radical":
+        # keep explicit H already present from include_h_bonds
         return _dummies_to_radicals_then_remove(frag)
     if mode == "cap_h":
         return _dummies_cap_h_then_remove(frag)
@@ -169,9 +157,14 @@ def _process_fragment_by_mode(frag: Chem.Mol, mode: Mode) -> Optional[Chem.Mol]:
     raise ValueError(f"Unknown mode: {mode}")
 
 
-def _fragment_smiles_from_cut(mol: Chem.Mol, bond_indices: Sequence[int], mode: Mode) -> Optional[Tuple[str, ...]]:
+def _fragment_smiles_from_cut(
+    mol: Chem.Mol, bond_indices: Sequence[int], mode: Mode
+) -> Optional[Tuple[str, ...]]:
     if not bond_indices:
-        return tuple(sorted({_canonical_smiles(mol)}))
+        m0 = _sanitize_lenient(Chem.Mol(mol))
+        if m0 is None:
+            return None
+        return tuple(sorted({_canonical_smiles_explicit_h(m0)}))
 
     cut_mol = Chem.FragmentOnBonds(mol, list(bond_indices), addDummies=True)
     frags = Chem.GetMolFrags(cut_mol, asMols=True, sanitizeFrags=False)
@@ -181,7 +174,7 @@ def _fragment_smiles_from_cut(mol: Chem.Mol, bond_indices: Sequence[int], mode: 
         f2 = _process_fragment_by_mode(f, mode)
         if f2 is None:
             return None
-        out_smiles.append(_canonical_smiles(f2))
+        out_smiles.append(_canonical_smiles_explicit_h(f2))
 
     out_smiles.sort()
     return tuple(out_smiles)
@@ -190,21 +183,29 @@ def _fragment_smiles_from_cut(mol: Chem.Mol, bond_indices: Sequence[int], mode: 
 def enumerate_cleavage_products(
     smiles: str,
     *,
-    max_cuts: int = 1,
+    max_cuts: int = 2,
     include_ring_bonds: bool = True,
+    include_h_bonds: bool = True,
     mode: Mode = "radical",
 ) -> List[CleavageResult]:
     """
     Enumerate cleavage products for combinations of up to `max_cuts` broken bonds.
 
-    mode:
-      - "radical": homolytic cleavage; each cut end gains one radical electron
-      - "cap_h"  : remove cut markers, sanitize; valence satisfied with implicit H
-      - "ionic"  : heuristic heterolytic cleavage; assigns +/- charges based on EN
+    include_h_bonds:
+      - False: cleave only heavy-atom bonds (typical SMILES graph)
+      - True : use Chem.AddHs() to create explicit H atoms and X–H bonds, so
+               H-bond cleavage is included.
+    Output:
+      - fragment SMILES are canonical with explicit H atoms (allHsExplicit=True)
     """
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
+    mol0 = Chem.MolFromSmiles(smiles)
+    if mol0 is None:
         raise ValueError(f"Invalid SMILES: {smiles}")
+
+    mol = Chem.AddHs(mol0, addCoords=False) if include_h_bonds else Chem.Mol(mol0)
+    mol = _sanitize_lenient(mol)
+    if mol is None:
+        raise ValueError(f"Could not sanitize molecule from SMILES: {smiles}")
 
     candidate_bonds: List[int] = []
     for b in mol.GetBonds():

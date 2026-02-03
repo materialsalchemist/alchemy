@@ -29,7 +29,7 @@ def canonicalize_smiles(s):
 	if mol is None:
 		return s
 	Chem.SanitizeMol(mol)  # Ensure the molecule is sanitized
-	return mol_to_explicit_smiles(mol) if mol else smi
+	return mol_to_explicit_smiles(mol) if mol else s
 
 def canonicalize_smiles_list(smiles_list):
 	return sorted([
