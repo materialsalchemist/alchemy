@@ -16,8 +16,10 @@ dependencies = [
     "networkx>=3.5",
     "numba>=0.61.2",
     "numpy>=2.2.6",
+    "openbabel-wheel>=3.1.1.23",
     "pandas>=2.3.2",
     "rdkit>=2025.3.5",
+    "ruff>=0.15.11",
     "rxnmapper[rdkit]>=0.4.2",
     "scipy>=1.16.1",
     "tqdm>=4.67.1",
@@ -36,4 +38,13 @@ py-modules = ["alchemy"]
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.format]
+indent-style = "tab"
+quote-style = "double"
+skip-magic-trailing-comma = false
+line-ending = "lf"
 

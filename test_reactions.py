@@ -4,14 +4,14 @@ from os import cpu_count
 
 
 space = ReactionSpace(
-		input_csv='test_chemical_space/molecules.csv', 
-		output_dir="test_reactions", 
-		n_workers=cpu_count(),
-		num_generations=2,
-		max_reaction_complexity=5,
-		g05_method='recombination',
-		require_custom_reactant=False
-	)
+	input_csv="test_chemical_space/molecules.csv",
+	output_dir="test_reactions",
+	n_workers=cpu_count(),
+	num_generations=2,
+	max_reaction_complexity=5,
+	g05_method="recombination",
+	require_custom_reactant=False,
+)
 space.find_reaction_candidates()
 space.verify_reactions()
-space.export_to_csv(filename='reactions.csv')
+space.export_to_csv(filename="reactions.csv")
