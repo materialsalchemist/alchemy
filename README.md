@@ -4,8 +4,8 @@ A tool for exploring chemical space and generating chemical reaction networks.
 
 ## Features
 
-- **Chemical Space Exploration**: Generate all plausible molecules up to a certain number of heavy atoms from a given set of elements.
-- **Reaction Network Generation**: Discover chemical reactions from a set of molecules and build a reaction network.
+- **Chemical Space Exploration**: Generate all plausible molecules up to a certain number of heavy atoms from a given set of elements, or discover fragments (cleavage products) from specific parent molecules.
+- **Reaction Network Generation**: Discover chemical reactions from a set of molecules and build a reaction network using hierarchical generation (G0, G1, G2+).
 - **Data Export**: Export molecules, reactions, and the reaction network graph in various formats (CSV, PNG, XYZ, JSON).
 
 ## Installation
@@ -44,20 +44,27 @@ The main command is `alchemy`, which has two subcommands: `chemical` and `reacti
 
 ### 1. Chemical Space Exploration
 
-The `chemical` subcommand is used to generate a set of molecules.
+The `chemical` subcommand is used to generate a set of molecules or fragments.
 
 #### Full Workflow (`explore`)
 
-The easiest way to get started is to run the full workflow, which generates molecules and exports them.
+The easiest way to get started is to run the full workflow.
 
+**Generate from elements:**
 ```bash
 alchemy chemical explore --max-atoms 3 -a C -a O -a H --output-dir chemical_space_results
 ```
 
+**Generate fragments from a parent molecule:**
+```bash
+alchemy chemical explore --smiles "CCO" --max-atoms 3 --output-dir chemical_space_results
+```
+
 This command will:
-1. Generate all plausible molecular compositions up to 3 heavy atoms using C, O, and H.
+1. Generate all plausible molecular compositions up to the atom limit.
 2. Build unique molecule structures from these compositions.
-3. Export the resulting molecules to `chemical_space_results/molecules.csv`.
+3. If `--smiles` is provided, generate cleavage products (fragments) from the parent molecule.
+4. Export the resulting molecules to `chemical_space_results/molecules.csv`.
 
 #### Individual Stages
 
@@ -97,8 +104,8 @@ The `reaction` subcommand takes a list of molecules (e.g., from the `chemical ex
 alchemy reaction explore --input-csv chemical_space_results/molecules.csv --output-dir reaction_space_results
 ```
 This command will:
-1. Find reaction candidates from the molecules in `molecules.csv`.
-2. Verify the chemical plausibility of these reactions using `rxnmapper`.
+1. Find reaction candidates (dissociations, transfers, rearrangements) from the molecules in `molecules.csv`.
+2. Verify the chemical plausibility of these reactions.
 3. Export verified reactions to `reaction_space_results/reactions.csv`.
 4. Export the reaction network graph to `reaction_space_results/reaction_network.json`.
 
@@ -106,7 +113,7 @@ This command will:
 
 - **Stage 1: Find Reaction Candidates**
   ```bash
-  alchemy reaction find-candidates --generations 2
+  alchemy reaction find-candidates --generations 2 --max-complexity 3
   ```
 
 - **Stage 2: Verify Reactions**
@@ -121,6 +128,9 @@ This command will:
 
   # Export reaction network graph
   alchemy reaction export-graph
+
+  # Export reaction images
+  alchemy reaction export-images
   ```
 
 For more options, use the `--help` flag: `alchemy reaction --help`.
