@@ -1,0 +1,23 @@
+@use "variables" as *;
+
+.hbtn {
+	font-size: 12px;
+	padding: 4px 12px;
+	border-radius: 6px;
+	border: 1px solid $border2;
+	background: transparent;
+	color: $text2;
+	cursor: pointer;
+	transition: all 0.15s;
+
+	&:hover {
+		background: $surface;
+		color: $text;
+	}
+
+	&.active {
+		background: $accent2;
+		border-color: $accent;
+		color: #fff;
+	}
+}

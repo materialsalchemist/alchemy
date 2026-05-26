@@ -1,0 +1,213 @@
+@use "variables" as *;
+
+.workspace {
+	display: flex;
+	flex: 1;
+	overflow: hidden;
+}
+
+.filter-panel {
+	width: $panel-w;
+	background: $bg2;
+	border-right: 1px solid $border;
+	display: flex;
+	flex-direction: column;
+	flex-shrink: 0;
+	overflow-y: auto;
+	z-index: 5;
+
+	.panel-section {
+		padding: 14px 16px;
+		border-bottom: 1px solid $border;
+	}
+
+	.panel-label {
+		font-size: 10px;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: $text3;
+		margin-bottom: 10px;
+		font-weight: 500;
+	}
+
+	.search-box {
+		width: 100%;
+		background: $bg3;
+		border: 1px solid $border;
+		border-radius: 6px;
+		color: $text;
+		font-family: $font-mono;
+		font-size: 12px;
+		padding: 7px 10px;
+		outline: none;
+
+		&:focus {
+			border-color: $accent;
+		}
+	}
+
+	.mol-search-list {
+		max-height: 250px;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		margin-top: 8px;
+		padding-right: 4px;
+
+		.mol-item {
+			font-family: $font-mono;
+			font-size: 11px;
+			padding: 8px 10px;
+			min-height: 32px !important;
+			display: flex;
+			align-items: center;
+			flex-shrink: 0;
+			border-radius: 6px;
+			background: $bg3;
+			border: 1px solid transparent;
+			cursor: pointer;
+			color: $text2;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			transition: all 0.1s ease;
+
+			&:hover {
+				background: $surface;
+				border-color: $border2;
+				color: $text;
+			}
+
+			&.selected {
+				border-color: $accent;
+				color: $accent;
+				background: rgba($accent, 0.08);
+			}
+		}
+	}
+
+	.gen-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 6px;
+	}
+
+	.gen-toggle {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 7px 10px;
+		border-radius: 6px;
+		border: 1px solid $border;
+		cursor: pointer;
+		font-size: 12px;
+		background: $bg3;
+		user-select: none;
+
+		&.active {
+			border-color: $accent;
+			background: rgba($accent, 0.08);
+		}
+
+		.gen-dot {
+			width: 8px;
+			height: 8px;
+			border-radius: 50%;
+		}
+
+		&[data-gen="G0"] .gen-dot {
+			background: $g0;
+		}
+		&[data-gen="G1"] .gen-dot {
+			background: $g1;
+		}
+		&[data-gen="G2"] .gen-dot {
+			background: $g2;
+		}
+		&[data-gen="G3"] .gen-dot {
+			background: $g3;
+		}
+	}
+
+	.type-row {
+		display: flex;
+		gap: 6px;
+
+		.type-toggle {
+			flex: 1;
+			padding: 6px 10px;
+			border-radius: 6px;
+			border: 1px solid $border;
+			background: $bg3;
+			color: $text2;
+			font-size: 12px;
+			cursor: pointer;
+			text-align: center;
+
+			&.mol.active {
+				border-color: $mol-color;
+				background: rgba($mol-color, 0.1);
+				color: $mol-color;
+			}
+
+			&.rxn.active {
+				border-color: $rxn-color;
+				background: rgba($rxn-color, 0.1);
+				color: $rxn-color;
+			}
+		}
+	}
+
+	.slider-row {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		margin-bottom: 8px;
+
+		.slider-label {
+			font-size: 12px;
+			color: $text2;
+			width: 110px;
+		}
+
+		.slider-val {
+			font-family: $font-mono;
+			font-size: 11px;
+			color: $text;
+			width: 32px;
+			text-align: right;
+		}
+
+		input[type="range"] {
+			flex: 1;
+			-webkit-appearance: none;
+			height: 3px;
+			background: $border2;
+			outline: none;
+
+			&::-webkit-slider-thumb {
+				-webkit-appearance: none;
+				width: 14px;
+				height: 14px;
+				border-radius: 50%;
+				background: $accent;
+				border: 2px solid $bg;
+			}
+		}
+	}
+
+	.legend {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+
+		.legend-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			font-size: 12px;
+			color: $text2;
+		}
+	}
+}

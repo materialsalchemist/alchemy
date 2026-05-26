@@ -1,0 +1,26 @@
+@use "variables" as *;
+
+* {
+	box-sizing: border-box;
+	margin: 0;
+	padding: 0;
+}
+
+body {
+	background: $bg;
+	color: $text;
+	font-family: $font-sans;
+	height: 100vh;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+}
+
+::-webkit-scrollbar {
+	width: 6px;
+
+	&-thumb {
+		background: $border2;
+		border-radius: 3px;
+	}
+}

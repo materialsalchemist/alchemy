@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reaction Space Explorer (Sigma.js)</title>
+<script src="https://unpkg.com/graphology@0.25.1/dist/graphology.umd.min.js"></script>
+<script src="https://unpkg.com/graphology-layout-forceatlas2@0.10.1/dist/graphology-layout-forceatlas2.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sigma.js/2.4.0/sigma.min.js"></script>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --bg2: #141720;
+    --bg3: #1c2030;
+    --surface: #1e2235;
+    --surface2: #252a3d;
+    --border: #2e3450;
+    --border2: #3d4466;
+    --text: #e8eaf2;
+    --text2: #8b91b0;
+    --text3: #555c7a;
+    --accent: #5b8eff;
+    --accent2: #3d6bdd;
+    --teal: #2dd4a0;
+    --teal2: #1a9e78;
+    --amber: #f5a623;
+    --coral: #ff6b6b;
+    --purple: #a78bfa;
+    --mol-color: #378ADD;
+    --rxn-color: #1D9E75;
+    --g0: #f5a623;
+    --g1: #5b8eff;
+    --g2: #a78bfa;
+    --g3: #2dd4a0;
+    --font: 'IBM Plex Mono', 'Fira Code', 'Cascadia Code', monospace;
+    --sans: 'Inter', system-ui, sans-serif;
+    --panel-w: 320px;
+    --drawer-w: 380px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    height: 48px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 16px;
+    flex-shrink: 0;
+    z-index: 10;
+  }
+  .logo { font-family: var(--font); font-size: 13px; letter-spacing: 0.05em; color: var(--teal); font-weight: 500; }
+  .logo span { color: var(--text2); }
+  .stat-pill { font-family: var(--font); font-size: 11px; padding: 3px 9px; border-radius: 20px; border: 1px solid var(--border2); color: var(--text2); background: var(--bg3); }
+  .stat-pill b { color: var(--text); }
+  .header-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .hbtn { font-size: 12px; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--border2); background: transparent; color: var(--text2); cursor: pointer; transition: all 0.15s; }
+  .hbtn:hover { background: var(--surface); color: var(--text); }
+  .hbtn.active { background: var(--accent2); border-color: var(--accent); color: #fff; }
+
+  .workspace { display: flex; flex: 1; overflow: hidden; }
+
+  .filter-panel {
+    width: var(--panel-w);
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow-y: auto;
+    z-index: 5;
+  }
+  .panel-section { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+  .panel-label { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text3); margin-bottom: 10px; font-weight: 500; }
+  .search-box { width: 100%; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: var(--font); font-size: 12px; padding: 7px 10px; outline: none; }
+  .search-box:focus { border-color: var(--accent); }
+
+  .gen-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .gen-toggle { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer; font-size: 12px; background: var(--bg3); user-select: none; }
+  .gen-toggle.active { border-color: var(--accent); background: rgba(91,142,255,0.08); }
+  .gen-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .gen-toggle[data-gen="G0"] .gen-dot { background: var(--g0); }
+  .gen-toggle[data-gen="G1"] .gen-dot { background: var(--g1); }
+  .gen-toggle[data-gen="G2"] .gen-dot { background: var(--g2); }
+  .gen-toggle[data-gen="G3"] .gen-dot { background: var(--g3); }
+
+  .type-row { display: flex; gap: 6px; }
+  .type-toggle { flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg3); color: var(--text2); font-size: 12px; cursor: pointer; text-align: center; }
+  .type-toggle.mol.active { border-color: var(--mol-color); background: rgba(55,138,221,0.1); color: var(--mol-color); }
+  .type-toggle.rxn.active { border-color: var(--rxn-color); background: rgba(29,158,117,0.1); color: var(--rxn-color); }
+
+  .slider-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .slider-label { font-size: 12px; color: var(--text2); width: 110px; }
+  .slider-val { font-family: var(--font); font-size: 11px; color: var(--text); width: 32px; text-align: right; }
+  input[type=range] { flex: 1; -webkit-appearance: none; height: 3px; background: var(--border2); outline: none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg); }
+
+  .mol-search-list { max-height: 160px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+	.mol-item { flex-shrink: 0; font-family: var(--font); font-size: 11px; padding: 5px 8px; border-radius: 5px; background: var(--bg3); cursor: pointer; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 2rem; }
+  .mol-item.selected { border-color: var(--accent); color: var(--accent); background: rgba(91,142,255,0.08); }
+
+  .legend { display: flex; flex-direction: column; gap: 6px; }
+  .legend-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text2); }
+
+  .graph-area { flex: 1; position: relative; overflow: hidden; background: #0b0d12; }
+  #sigma-container { width: 100%; height: 100%; }
+
+  .tooltip { position: absolute; background: var(--surface); border: 1px solid var(--border2); border-radius: 8px; padding: 8px 12px; font-size: 12px; font-family: var(--font); color: var(--text); pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 20; }
+  .tooltip.visible { opacity: 1; }
+  .tooltip-type { font-size: 10px; text-transform: uppercase; color: var(--text3); margin-bottom: 4px; }
+
+  .detail-drawer { width: 0; background: var(--bg2); border-left: 1px solid var(--border); overflow: hidden; transition: width 0.25s; display: flex; flex-direction: column; z-index: 5; }
+  .detail-drawer.open { width: var(--drawer-w); }
+  .drawer-inner { width: var(--drawer-w); padding: 16px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+  .drawer-close { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text2); }
+
+  .smiles-box { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-family: var(--font); font-size: 11px; color: var(--teal); word-break: break-all; }
+  .prop-table { width: 100%; border-collapse: collapse; }
+  .prop-table td { padding: 5px 0; font-size: 12px; border-bottom: 1px solid var(--border); }
+
+  .zoom-controls { position: absolute; bottom: 20px; left: 16px; display: flex; flex-direction: column; gap: 4px; z-index: 10; }
+  .zbtn { width: 30px; height: 30px; background: var(--surface); border: 1px solid var(--border2); border-radius: 6px; color: var(--text); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+
+  .empty-state { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; color: var(--text3); font-size: 14px; pointer-events: none; }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">rxn<span>.</span>explorer</div>
+  <div class="stat-pill" id="stat-nodes">nodes: <b>0</b></div>
+  <div class="stat-pill" id="stat-edges">edges: <b>0</b></div>
+  <div class="header-actions">
+    <button class="hbtn" id="btn-connect-kuzu">Connect to Kuzu</button>
+    <button class="hbtn" id="btn-load-demo">Load demo data</button>
+    <button class="hbtn" id="btn-load-file">Load JSON</button>
+    <input type="file" id="file-input" accept=".json,.csv" style="display:none">
+    <button class="hbtn active" id="btn-reset-view">Reset view</button>
+  </div>
+</header>
+
+<div class="workspace">
+  <div class="filter-panel">
+    <div class="panel-section">
+      <div class="panel-label">Search SMILES / ID</div>
+      <input class="search-box" id="search-input" type="text" placeholder="CC(=O)O or reaction id…">
+      <div class="mol-search-list" id="search-results"></div>
+    </div>
+    <div class="panel-section">
+      <div class="panel-label">Generation</div>
+      <div class="gen-grid" id="gen-toggles">
+        <div class="gen-toggle active" data-gen="G0"><div class="gen-dot"></div>G0</div>
+        <div class="gen-toggle active" data-gen="G1"><div class="gen-dot"></div>G1</div>
+        <div class="gen-toggle active" data-gen="G2"><div class="gen-dot"></div>G2</div>
+        <div class="gen-toggle active" data-gen="G3"><div class="gen-dot"></div>G3+</div>
+      </div>
+    </div>
+    <div class="panel-section">
+      <div class="panel-label">Physics (FA2)</div>
+      <div class="slider-row">
+        <span class="slider-label">Gravity</span>
+        <input type="range" id="sl-gravity" min="0" max="10" value="1" step="0.1">
+        <span class="slider-val" id="sl-gravity-v">1.0</span>
+      </div>
+      <div class="slider-row">
+        <span class="slider-label">Scaling</span>
+        <input type="range" id="sl-scaling" min="1" max="50" value="10" step="1">
+        <span class="slider-val" id="sl-scaling-v">10</span>
+      </div>
+      <button class="hbtn" id="btn-run-layout" style="width:100%;margin-top:8px">Run Layout</button>
+    </div>
+    <div class="panel-section">
+      <div class="panel-label">Legend</div>
+      <div class="legend">
+        <div class="legend-row"><div style="width:12px;height:12px;border-radius:50%;background:#378ADD"></div> Molecule</div>
+        <div class="legend-row"><div style="width:12px;height:12px;background:#1D9E75"></div> Reaction</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="graph-area">
+    <div id="sigma-container"></div>
+    <div class="tooltip" id="tooltip">
+      <div class="tooltip-type" id="tt-type"></div>
+      <div id="tt-label"></div>
+      <div style="color:var(--text2);font-size:11px" id="tt-id"></div>
+    </div>
+    <div class="zoom-controls">
+      <button class="zbtn" id="zoom-in">+</button>
+      <button class="zbtn" id="zoom-out">−</button>
+      <button class="zbtn" id="zoom-fit">⊡</button>
+    </div>
+    <div class="empty-state" id="empty-state">
+      <div style="font-size:40px">⬡</div>
+      <div>Connect to Kuzu or load demo data</div>
+    </div>
+  </div>
+
+  <div class="detail-drawer" id="detail-drawer">
+    <div class="drawer-inner" id="drawer-inner"></div>
+  </div>
+</div>
+
+<script>
+// ─── Constants & State ───────────────────────────────────────────────────────
+const API_BASE = '';
+const graph = new graphology.Graph();
+let renderer = null;
+let hoveredNode = null;
+let selectedNode = null;
+let activeGens = new Set(['G0','G1','G2','G3']);
+let activeTypes = new Set(['molecule','reaction']);
+
+const atomColors = { C:'#5b8eff', H:'#8b91b0', O:'#ff6b6b', N:'#a78bfa', S:'#f5a623', F:'#2dd4a0', default:'#555c7a' };
+
+// ─── Custom Node Program (Rectangles for Reactions) ──────────────────────────
+const BaseNodeProgram = (typeof Sigma !== 'undefined' && Sigma.NodeProgram)
+  || (typeof Sigma !== 'undefined' && Sigma.WebGL && Sigma.WebGL.Programs && Sigma.WebGL.Programs.NodeProgram)
+  || class {};
+
+class NodeSquareProgram extends BaseNodeProgram {
+  constructor(gl, renderer) {
+    if (super.constructor === Object) return;
+    super(gl, renderer, {
+      attributes: [
+        { name: "position", size: 2, type: gl.FLOAT },
+        { name: "size", size: 1, type: gl.FLOAT },
+        { name: "color", size: 4, type: gl.UNSIGNED_BYTE, normalized: true },
+      ],
+      vertexShaderSource: `
+        attribute vec2 position;
+        attribute float size;
+        attribute vec4 color;
+        uniform mat3 matrix;
+        uniform float ratio;
+        uniform float scalingRatio;
+        varying vec4 v_color;
+        void main() {
+          gl_Position = vec4((matrix * vec3(position, 1.0)).xy, 0.0, 1.0);
+          gl_PointSize = size * ratio * scalingRatio * 2.0;
+          v_color = color;
+          v_color.a *= 255.0;
+        }
+      `,
+      fragmentShaderSource: `
+        precision mediump float;
+        varying vec4 v_color;
+        void main() {
+          gl_FragColor = v_color;
+        }
+      `,
+    });
+  }
+  process(data, attributes, offset) {
+    attributes[offset++] = data.x;
+    attributes[offset++] = data.y;
+    attributes[offset++] = data.size;
+    const color = (Sigma.utils && Sigma.utils.floatColor) ? Sigma.utils.floatColor(data.color) : 0;
+    attributes[offset++] = color;
+  }
+}
+
+// ─── Graph Logic ─────────────────────────────────────────────────────────────
+function initSigma() {
+  const container = document.getElementById("sigma-container");
+
+  // Try to find any node program that works
+  let CircleProgram = null;
+  if (typeof Sigma !== 'undefined') {
+    CircleProgram = Sigma.CircleNodeProgram ||
+                    (Sigma.WebGL && Sigma.WebGL.Programs && Sigma.WebGL.Programs.NodeCircle) ||
+                    (Sigma.WebGL && Sigma.WebGL.Programs && Sigma.WebGL.Programs.Node && Sigma.WebGL.Programs.Node.Circle) ||
+                    (Sigma.programs && Sigma.programs.node && Sigma.programs.node.Circle) ||
+                    (Sigma.WebGL && Sigma.WebGL.Programs && Sigma.WebGL.Programs.Node); // Ultimate fallback
+  }
+
+  const options = {
+    renderEdgeLabels: false,
+    labelFont: "IBM Plex Mono",
+    labelSize: 10,
+    labelColor: { color: "#8b91b0" },
+    defaultEdgeType: "arrow",
+  };
+
+  options.nodePrograms = {
+    molecule: CircleProgram || (Sigma.WebGL && Sigma.WebGL.Programs && Sigma.WebGL.Programs.Node),
+  };
+
+  if (NodeSquareProgram && NodeSquareProgram.prototype instanceof Object) {
+    options.nodePrograms.reaction = NodeSquareProgram;
+  }
+
+  try {
+    renderer = new Sigma(graph, container, options);
+  } catch (e) {
+    console.error("Sigma initialization failed:", e);
+    renderer = new Sigma(graph, container);
+  }
+
+  renderer.setSetting("nodeReducer", (node, data) => {
+    const res = { ...data };
+    if (hoveredNode && node !== hoveredNode && !graph.neighbors(node).includes(hoveredNode)) {
+      res.label = "";
+      res.color = "#1c2030";
+    }
+    if (selectedNode && node !== selectedNode && !graph.neighbors(node).includes(selectedNode)) {
+      res.color = "#1c2030";
+      res.label = "";
+    }
+    if (!activeGens.has(data.gen) && data.type === 'reaction') res.hidden = true;
+    if (!activeTypes.has(data.type)) res.hidden = true;
+    return res;
+  });
+
+  renderer.setSetting("edgeReducer", (edge, data) => {
+    const res = { ...data };
+    if (hoveredNode && !graph.hasExtremity(edge, hoveredNode)) res.hidden = true;
+    if (selectedNode && !graph.hasExtremity(edge, selectedNode)) res.hidden = true;
+    return res;
+  });
+
+
+  renderer.on("enterNode", ({ node }) => {
+    hoveredNode = node;
+    const data = graph.getNodeAttributes(node);
+    showTooltip(data);
+    renderer.refresh();
+  });
+  renderer.on("leaveNode", () => {
+    hoveredNode = null;
+    hideTooltip();
+    renderer.refresh();
+  });
+  renderer.on("clickNode", ({ node }) => {
+    selectedNode = node;
+    const data = graph.getNodeAttributes(node);
+    openDrawer(node, data);
+    expandNeighborhood(node);
+    renderer.refresh();
+  });
+  renderer.on("clickStage", () => {
+    selectedNode = null;
+    closeDrawer();
+    renderer.refresh();
+  });
+}
+
+function runLayout() {
+  const settings = {
+    gravity: parseFloat(document.getElementById('sl-gravity').value),
+    scalingRatio: parseFloat(document.getElementById('sl-scaling').value),
+    barnesHutOptimize: graph.order > 500
+  };
+  forceAtlas2.assign(graph, { iterations: 100, settings });
+}
+
+function updateStats() {
+  document.getElementById('stat-nodes').innerHTML = `nodes: <b>${graph.order}</b>`;
+  document.getElementById('stat-edges').innerHTML = `edges: <b>${graph.size}</b>`;
+  document.getElementById('empty-state').style.display = graph.order > 0 ? 'none' : 'block';
+}
+
+function addDataToGraph(data) {
+  data.nodes.forEach(n => {
+    if (!graph.hasNode(n.id)) {
+      graph.addNode(n.id, {
+        ...n,
+        x: Math.random(),
+        y: Math.random(),
+        size: n.type === 'molecule' ? 8 : 12,
+        color: n.type === 'molecule' ? '#378ADD' : (n.gen === 'G0' ? '#f5a623' : '#1D9E75'),
+        label: n.label || n.id,
+        type: n.type === 'reaction' ? 'reaction' : 'molecule'
+      });
+    }
+  });
+  data.links.forEach(l => {
+    const s = typeof l.source === 'object' ? l.source.id : l.source;
+    const t = typeof l.target === 'object' ? l.target.id : l.target;
+    if (graph.hasNode(s) && graph.hasNode(t) && !graph.hasEdge(s, t)) {
+      graph.addEdge(s, t, { size: 1, color: "#3d4466", type: "arrow" });
+    }
+  });
+  updateStats();
+  runLayout();
+}
+
+async function loadKuzuOverview() {
+  try {
+    const res = await fetch(`${API_BASE}/graph/overview?limit=40`);
+    const data = await res.json();
+    graph.clear();
+    addDataToGraph(data);
+  } catch (err) { alert("FastAPI not reachable"); }
+}
+
+async function expandNeighborhood(nodeId) {
+  try {
+    const res = await fetch(`${API_BASE}/graph/neighborhood?node_id=${encodeURIComponent(nodeId)}&hops=1`);
+    const data = await res.json();
+    addDataToGraph(data);
+  } catch (err) {}
+}
+
+// ─── UI Helpers ─────────────────────────────────────────────────────────────
+function showTooltip(d) {
+  const tt = document.getElementById('tooltip');
+  tt.querySelector('#tt-type').textContent = d.type;
+  tt.querySelector('#tt-label').textContent = d.label;
+  tt.querySelector('#tt-id').textContent = d.id.substring(0,40);
+  tt.classList.add('visible');
+  // Position is tricky with Sigma, usually follow mouse or fixed
+}
+function hideTooltip() { document.getElementById('tooltip').classList.remove('visible'); }
+
+function openDrawer(nodeId, d) {
+  const drawer = document.getElementById('detail-drawer');
+  drawer.classList.add('open');
+  const inner = document.getElementById('drawer-inner');
+
+  const inEdges = graph.inEdges(nodeId).length;
+  const outEdges = graph.outEdges(nodeId).length;
+
+  inner.innerHTML = `
+    <div style="display:flex;justify-content:space-between">
+      <b style="color:var(--accent)">${d.type.toUpperCase()}</b>
+      <div class="drawer-close" onclick="closeDrawer()">✕</div>
+    </div>
+    <div style="font-size:18px;margin-top:8px">${d.label}</div>
+    <div class="smiles-box" style="margin-top:10px">${d.smiles || d.id}</div>
+    <table class="prop-table" style="margin-top:15px">
+      <tr><td>ID</td><td>${nodeId}</td></tr>
+      <tr><td>Gen</td><td>${d.gen || 'N/A'}</td></tr>
+      <tr><td>Degree</td><td>${graph.degree(nodeId)} (In:${inEdges}, Out:${outEdges})</td></tr>
+    </table>
+  `;
+}
+function closeDrawer() { document.getElementById('detail-drawer').classList.remove('open'); selectedNode = null; renderer.refresh(); }
+
+// ─── Listeners ──────────────────────────────────────────────────────────────
+document.getElementById('btn-connect-kuzu').onclick = loadKuzuOverview;
+document.getElementById('btn-run-layout').onclick = runLayout;
+document.getElementById('zoom-in').onclick = () => renderer.getCamera().animatedZoom(1.5);
+document.getElementById('zoom-out').onclick = () => renderer.getCamera().animatedZoom(0.7);
+document.getElementById('zoom-fit').onclick = () => renderer.getCamera().animatedReset();
+document.getElementById('btn-reset-view').onclick = () => renderer.getCamera().animatedReset();
+
+document.querySelectorAll('.gen-toggle').forEach(el => {
+  el.onclick = () => {
+    el.classList.toggle('active');
+    const gen = el.dataset.gen;
+    if (el.classList.contains('active')) activeGens.add(gen); else activeGens.delete(gen);
+    renderer.refresh();
+  };
+});
+
+document.querySelectorAll('.type-toggle').forEach(el => {
+  el.onclick = () => {
+    el.classList.toggle('active');
+    const t = el.dataset.type;
+    if (el.classList.contains('active')) activeTypes.add(t); else activeTypes.delete(t);
+    renderer.refresh();
+  };
+});
+
+document.getElementById('sl-gravity').oninput = (e) => { document.getElementById('sl-gravity-v').textContent = e.target.value; };
+document.getElementById('sl-scaling').oninput = (e) => { document.getElementById('sl-scaling-v').textContent = e.target.value; };
+
+// ─── Search ──────────────────────────────────────────────────────────────────
+const searchInput = document.getElementById('search-input');
+const searchResults = document.getElementById('search-results');
+searchInput.oninput = async () => {
+  const q = searchInput.value.trim();
+  searchResults.innerHTML = '';
+  if (q.length < 2) return;
+  try {
+    const res = await fetch(`${API_BASE}/graph/search?q=${encodeURIComponent(q)}`);
+    const nodes = await res.json();
+    nodes.forEach(n => {
+      const div = document.createElement('div');
+      div.className = 'mol-item';
+      div.textContent = n.label || n.id;
+      div.onclick = async () => {
+        if (!graph.hasNode(n.id)) await expandNeighborhood(n.id);
+        const pos = renderer.getNodeDisplayData(n.id);
+        renderer.getCamera().animate(pos, { duration: 500 });
+        selectedNode = n.id;
+        openDrawer(n.id, graph.getNodeAttributes(n.id));
+        renderer.refresh();
+      };
+      searchResults.appendChild(div);
+    });
+  } catch(e) {}
+};
+
+// ─── Demo Data ───────────────────────────────────────────────────────────────
+document.getElementById('btn-load-demo').onclick = () => {
+  const demo = {
+    nodes: [
+      { id: 'C', label: 'Methane', type: 'molecule', gen: 'G0', smiles: 'C' },
+      { id: 'O2', label: 'Oxygen', type: 'molecule', gen: 'G0', smiles: '[O][O]' },
+      { id: 'RXN1', label: 'Oxidation', type: 'reaction', gen: 'G1', smiles: 'C.O2>>CO2.H2O' },
+      { id: 'CO2', label: 'CO2', type: 'molecule', gen: 'G1', smiles: 'C(=O)=O' },
+      { id: 'H2O', label: 'Water', type: 'molecule', gen: 'G1', smiles: 'O' }
+    ],
+    links: [
+      { source: 'C', target: 'RXN1' }, { source: 'O2', target: 'RXN1' },
+      { source: 'RXN1', target: 'CO2' }, { source: 'RXN1', target: 'H2O' }
+    ]
+  };
+  graph.clear();
+  addDataToGraph(demo);
+};
+
+// ─── Boot ────────────────────────────────────────────────────────────────────
+initSigma();
+</script>
+</body>
+</html>

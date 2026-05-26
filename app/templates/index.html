@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reaction Space Explorer (Sigma.js)</title>
+<script src="https://unpkg.com/graphology@0.25.1/dist/graphology.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/graphology-library@0.8.0/dist/graphology-library.min.js"></script>
+<link rel="stylesheet" href="{{ url_for('static', path='/css/style.css') }}?v=1.4">
+</head>
+<body>
+<header>
+  <div class="logo">rxn<span>.</span>explorer</div>
+  <div class="stat-pill" id="stat-nodes">nodes: <b>0</b></div>
+  <div class="stat-pill" id="stat-edges">edges: <b>0</b></div>
+  <div class="header-actions">
+    <button class="hbtn" id="btn-connect-kuzu">Connect to Kuzu</button>
+    <button class="hbtn" id="btn-load-demo">Load demo data</button>
+    <button class="hbtn" id="btn-load-file">Load JSON</button>
+    <input type="file" id="file-input" accept=".json,.csv" style="display:none">
+    <button class="hbtn active" id="btn-reset-view">Reset view</button>
+  </div>
+</header>
+<div class="workspace">
+  <div class="filter-panel">
+    <div class="panel-section">
+      <div class="panel-label">Search SMILES / ID</div>
+      <input class="search-box" id="search-input" type="text" placeholder="CC(=O)O or reaction id…">
+      <div class="mol-search-list" id="search-results"></div>
+    </div>
+    <div class="panel-section">
+      <div class="panel-label">Generation</div>
+      <div class="gen-grid" id="gen-toggles">
+        <div class="gen-toggle active" data-gen="G0"><div class="gen-dot"></div>G0</div>
+        <div class="gen-toggle active" data-gen="G1"><div class="gen-dot"></div>G1</div>
+        <div class="gen-toggle active" data-gen="G2"><div class="gen-dot"></div>G2</div>
+        <div class="gen-toggle active" data-gen="G3"><div class="gen-dot"></div>G3+</div>
+      </div>
+    </div>
+    <div class="panel-section" id="thermo-section">
+      <div class="panel-label">Thermodynamics</div>
+      <div id="btn-thermo-filter" class="gen-toggle" style="width: 100%; justify-content: flex-start;">
+        <div class="gen-dot" style="background: #1D9E75"></div>
+        Filter invalid reactions
+      </div>
+    </div>
+    <div class="panel-section">
+      <div class="panel-label">Legend</div>
+      <div class="legend">
+        <div class="legend-row"><div style="width:12px;height:12px;border-radius:50%;background:#378ADD"></div> Molecule</div>
+        <div class="legend-row"><div style="width:12px;height:12px;background:#1D9E75"></div> Reaction</div>
+      </div>
+    </div>
+  </div>
+  <div class="graph-area">
+    <div id="sigma-container"></div>
+    <div id="toast-container" style="position:absolute; top:20px; right:20px; z-index:100; pointer-events:none;"></div>
+    <div class="tooltip" id="tooltip">
+      <div class="tooltip-type" id="tt-type"></div>
+      <div id="tt-label"></div>
+      <div style="color:var(--text2);font-size:11px" id="tt-id"></div>
+    </div>
+    <div class="zoom-controls">
+      <button class="zbtn" id="zoom-in">+</button>
+      <button class="zbtn" id="zoom-out">−</button>
+      <button class="zbtn" id="zoom-fit">⊡</button>
+    </div>
+    <div class="empty-state" id="empty-state">
+      <div style="font-size:40px">⬡</div>
+      <div>Connect to Kuzu or load demo data</div>
+    </div>
+  </div>
+  <div class="detail-drawer" id="detail-drawer">
+    <div class="drawer-inner" id="drawer-inner"></div>
+  </div>
+</div>
+<script src="{{ url_for('static', path='/js/api.js') }}?v=1.11"></script>
+<script src="{{ url_for('static', path='/js/sigma_custom.js') }}?v=1.11"></script>
+<script src="{{ url_for('static', path='/js/ui.js') }}?v=1.11"></script>
+<script src="{{ url_for('static', path='/js/app.js') }}?v=1.11"></script>
+</body>
+</html>

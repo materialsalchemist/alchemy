@@ -1,0 +1,46 @@
+@use "variables" as *;
+
+header {
+	height: 48px;
+	background: $bg2;
+	border-bottom: 1px solid $border;
+	display: flex;
+	align-items: center;
+	padding: 0 16px;
+	gap: 16px;
+	flex-shrink: 0;
+	z-index: 10;
+
+	.logo {
+		font-family: $font-mono;
+		font-size: 13px;
+		letter-spacing: 0.05em;
+		color: $teal;
+		font-weight: 500;
+
+		span {
+			color: $text2;
+		}
+	}
+
+	.stat-pill {
+		font-family: $font-mono;
+		font-size: 11px;
+		padding: 3px 9px;
+		border-radius: 20px;
+		border: 1px solid $border2;
+		color: $text2;
+		background: $bg3;
+
+		b {
+			color: $text;
+		}
+	}
+
+	.header-actions {
+		margin-left: auto;
+		display: flex;
+		gap: 8px;
+		align-items: center;
+	}
+}

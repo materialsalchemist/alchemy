@@ -1,0 +1,60 @@
+@use "variables" as *;
+
+.detail-drawer {
+	width: 0;
+	background: $bg2;
+	border-left: 1px solid $border;
+	overflow: hidden;
+	transition: width 0.25s;
+	display: flex;
+	flex-direction: column;
+	z-index: 5;
+
+	&.open {
+		width: $drawer-w;
+	}
+
+	.drawer-inner {
+		width: $drawer-w;
+		padding: 16px;
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+		overflow-y: auto;
+	}
+
+	.drawer-close {
+		background: $bg3;
+		border: 1px solid $border;
+		border-radius: 6px;
+		width: 28px;
+		height: 28px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		cursor: pointer;
+		color: $text2;
+	}
+}
+
+.smiles-box {
+	background: $bg3;
+	border: 1px solid $border;
+	border-radius: 6px;
+	padding: 10px 12px;
+	font-family: $font-mono;
+	font-size: 11px;
+	color: $teal;
+	word-break: break-all;
+}
+
+.prop-table {
+	width: 100%;
+	border-collapse: collapse;
+
+	td {
+		padding: 5px 0;
+		font-size: 12px;
+		border-bottom: 1px solid $border;
+	}
+}

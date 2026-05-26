@@ -126,26 +126,34 @@ This command will:
   # Export reactions to CSV
   alchemy reaction export-csv
 
-  # Export reaction network graph
+  # Export reaction network graph (NetworkX JSON)
   alchemy reaction export-graph
 
-  # Export reaction images
-  alchemy reaction export-images
+  # Export to KuzuDB Graph Database (Required for Web Visualization)
+  alchemy reaction export-kuzu --output-dir reaction_space_results
+
+  # Calculate node importance (PageRank) for visualization
+  alchemy reaction calculate-importance --kuzu-dir reaction_space_results/kuzu_db
   ```
 
 For more options, use the `--help` flag: `alchemy reaction --help`.
 
 ### Web Visualization
 
-This project also includes a Flask web application for visualizing the generated molecules and reaction network.
+This project includes a high-performance **FastAPI** web application for visualizing the chemical reaction network using [Sigma.js](https://www.sigmajs.org/) and [KuzuDB](https://kuzudb.com/).
 
-To run the web app:
+**1. Prepare the database:**
+Ensure you have exported your reaction network to KuzuDB and calculated node importance:
 ```bash
-flask --app flask_app/app.py run
+alchemy reaction export-kuzu
+alchemy reaction calculate-importance
 ```
-Then open your web browser to `http://127.0.0.1:5000`.
 
-_Note: Make sure the `chemical_space_results` and `reaction_space_results` directories are in the project root for the web app to find the data._
+**2. Run the web app:**
+```bash
+uvicorn app.main:app --reload
+```
+Then open your web browser to `http://127.0.0.1:8000`.
 
 ## Development
 
