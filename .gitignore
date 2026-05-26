@@ -5,7 +5,12 @@ build/
 dist/
 wheels/
 *.egg-info
+.ruff_cache/
 
 # Virtual environments
 .venv
+
+# Data and Results
 results_*/
+*_results/
+**/db/
