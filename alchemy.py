@@ -1,5 +1,11 @@
 import click
+import sys
+import os
 from multiprocessing import set_start_method, freeze_support
+
+# Ensure the project root is in the path for top-level modules
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+
 from chemical_space.cli import chemical_cli
 from reaction_space.cli import reaction_cli
 

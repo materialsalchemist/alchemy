@@ -141,9 +141,69 @@ def export_graph(output_dir, filename):
 	type=click.Path(file_okay=False),
 	default="reaction_space_results",
 	show_default=True,
-	help="Directory containing the reaction databases and where to save images.",
+	help="Directory containing the reaction databases.",
 )
-def export_images(output_dir):
-	"""Step 3c: Export verified reactions from database to PNG images."""
-	space = ReactionSpace(input_csv="", output_dir=output_dir)  # input_csv not needed for export
-	space.export_images()
+@click.option(
+	"--kuzu-dir",
+	type=click.Path(file_okay=False),
+	help="Directory to save KuzuDB database. Defaults to <output_dir>/kuzu_db",
+)
+@click.option(
+	"--verified/--no-verified",
+	default=True,
+	show_default=True,
+	help="Whether to export only verified reactions or all candidates.",
+)
+@click.option(
+	"--model-path",
+	type=click.Path(exists=True, dir_okay=False),
+	default="model.script",
+	show_default=True,
+	help="Path to the TorchScript model file.",
+)
+def export_kuzu(output_dir, kuzu_dir, verified, model_path):
+	"""Step 3d: Export reactions to KuzuDB graph database."""
+	space = ReactionSpace(input_csv="", output_dir=output_dir)
+	space.export_to_kuzu(kuzu_dir=kuzu_dir, use_verified=verified, model_path=model_path)
+
+
+@reaction_cli.command()
+@click.option(
+	"-o",
+	"--output-dir",
+	type=click.Path(file_okay=False),
+	default="reaction_space_results",
+	show_default=True,
+	help="Directory containing the reaction databases.",
+)
+@click.option(
+	"--kuzu-dir",
+	type=click.Path(file_okay=False),
+	help="Directory to save KuzuDB database. Defaults to <output_dir>/kuzu_db",
+)
+@click.option(
+	"--model-path",
+	type=click.Path(exists=True, dir_okay=False),
+	default="model.script",
+	show_default=True,
+	help="Path to the TorchScript model file.",
+)
+def update_kuzu_energies(output_dir, kuzu_dir, model_path):
+	"""Step 3e: Update free energy predictions in an existing KuzuDB."""
+	space = ReactionSpace(input_csv="", output_dir=output_dir)
+	space.update_kuzu_energies(kuzu_dir=kuzu_dir, model_path=model_path)
+
+
+@reaction_cli.command()
+@click.option(
+	"--kuzu-dir",
+	type=click.Path(file_okay=False),
+	default="reaction_space_results/kuzu_db",
+	show_default=True,
+	help="Directory containing the KuzuDB database.",
+)
+def calculate_importance(kuzu_dir):
+	"""Offline step: Calculate node centrality (PageRank) for the visualizer."""
+	from .calculate_importance import calculate_importance as calc
+
+	calc(kuzu_dir=kuzu_dir)

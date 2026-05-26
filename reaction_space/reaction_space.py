@@ -3,14 +3,16 @@ import pandas as pd
 import click
 import itertools
 import os
+import collections
 from multiprocessing import Pool, Process, Queue
 from functools import partial
 import lmdb
 from tqdm import tqdm
+
 import logging
 from dataclasses import dataclass, field
 from os import cpu_count
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Iterator
 import networkx as nx
 import json
 import math
@@ -26,7 +28,8 @@ from .workers import (
 	worker_generate_higher_gen_reactions,
 	worker_verify_reaction_batch,
 )
-from .utils import canonicalize_smiles, canonicalize_smiles_list
+
+from .utils import canonicalize_smiles, canonicalize_smiles_list, chunked_iterable
 
 
 @dataclass
@@ -54,11 +57,15 @@ class ReactionSpace:
 		}
 		logging.info(f"ReactionSpace initialized. Results will be saved in '{self.output_dir}'")
 
+	def _get_reaction_hash(self, smi: str) -> bytes:
+		"""Returns a compact hash of the reaction SMILES for duplicate tracking."""
+		return hashlib.blake2b(smi.encode("utf-8"), digest_size=12).digest()
+
 	def _lmdb_writer(self, q: Queue, db_path: str, batch_size: int = 4096):
 		"""A process that listens on a queue and writes data to an LMDB database in batches."""
 		env = lmdb.open(
 			db_path,
-			map_size=10**11,
+			map_size=10**12,
 			writemap=True,
 			metasync=False,
 			sync=False,
@@ -80,13 +87,28 @@ class ReactionSpace:
 			with env.begin(write=True) as txn:
 				for k, v in batch.items():
 					txn.put(k, v, overwrite=False)
+		env.close()
+
+	def _iter_smiles_from_db(self, db_path: str) -> Iterator[str]:
+		"""Yields reaction SMILES from an LMDB database one by one."""
+		if not os.path.exists(db_path):
+			return
+		env = lmdb.open(db_path, readonly=True, lock=False)
+		with env.begin() as txn:
+			cursor = txn.cursor()
+			for _, value in cursor:
+				try:
+					value_data = json.loads(value.decode("utf-8"))
+					yield value_data["smi"]
+				except (json.JSONDecodeError, KeyError, Exception):
+					continue
+		env.close()
 
 	def _lmdb_batch_iterator(self, db_paths: List[str], batch_size: int, custom_reactants_filter: set = None):
 		"""
 		A generator that streams keys from multiple LMDB databases and yields them in batches.
 		"""
 		batch = []
-		seen_keys = set()
 
 		def __should_keep_reaction(smi: str, filter_set: set) -> bool:
 			if not filter_set:
@@ -100,13 +122,10 @@ class ReactionSpace:
 				has_custom_in_reactants = not filter_set.isdisjoint(reactants)
 				has_custom_in_products = not filter_set.isdisjoint(products)
 
-				# print(reactants, products)
-				# print(has_custom_in_reactants, has_custom_in_products)
-
 				# XOR condition: Keep if custom reactant is in reactants OR products, but NOT both.
 				return has_custom_in_reactants ^ has_custom_in_products
 			except (Exception, ValueError, AttributeError) as e:
-				print("Batch Iterator: ", e)
+				logging.error(f"Batch Iterator error: {e}")
 				return False
 
 		for db_path in db_paths:
@@ -117,37 +136,49 @@ class ReactionSpace:
 				env = lmdb.open(db_path, readonly=True, lock=False)
 				with env.begin() as txn:
 					cursor = txn.cursor()
-					for key, value in cursor:
-						if key not in seen_keys:
-							seen_keys.add(key)
-							try:
-								value_data = json.loads(value.decode("utf-8"))
-								smi = value_data["smi"]
-								gen = value_data["gen"]
+					for _, value in cursor:
+						try:
+							value_data = json.loads(value.decode("utf-8"))
+							smi = value_data["smi"]
+							gen = value_data["gen"]
 
-								if custom_reactants_filter and not __should_keep_reaction(smi, custom_reactants_filter):
-									continue
-
-								batch.append((smi, gen))
-
-								if len(batch) >= batch_size:
-									yield batch
-									batch = []
-							except (json.JSONDecodeError, KeyError, Exception) as e:
-								logging.warning(f"Skipping malformed entry with key {key.hex()}: {e}")
+							if custom_reactants_filter and not __should_keep_reaction(smi, custom_reactants_filter):
 								continue
+
+							batch.append((smi, gen))
+
+							if len(batch) >= batch_size:
+								yield batch
+								batch = []
+						except (json.JSONDecodeError, KeyError, Exception) as e:
+							logging.warning(f"Skipping malformed entry: {e}")
+							continue
 
 				env.close()
 
 				if batch:
 					yield batch
+					batch = []
 			except Exception as e:
-				print(e)
+				logging.error(f"Error reading {db_path}: {e}")
+
+	def _get_db_count(self, db_path: str) -> int:
+		"""Returns the number of entries in an LMDB database."""
+		if not os.path.exists(db_path):
+			return 0
+		try:
+			env = lmdb.open(db_path, readonly=True, lock=False)
+			count = env.stat()["entries"]
+			env.close()
+			return count
+		except Exception:
+			return 0
 
 	def find_reaction_candidates(self):
 		"""
 		Generates reaction candidates using hierarchical generation (G0, G1, G2+)
 		and writes them to generation-specific LMDB databases.
+		Uses memory-efficient hashing and streaming to scale to millions of reactions.
 		"""
 		click.secho("\n--- Starting Hierarchical Reaction Network Generation ---", bold=True)
 
@@ -157,51 +188,24 @@ class ReactionSpace:
 
 		df = pd.read_csv(self.input_csv)
 		initial_molecules = df["SMILES"].tolist()
-		click.secho(
-			f"Loaded {len(initial_molecules)} molecules from {self.input_csv}",
-			fg="green",
-		)
+		click.secho(f"Loaded {len(initial_molecules)} molecules from {self.input_csv}", fg="green")
 
 		initial_molecules_set = {canonicalize_smiles(s) for s in initial_molecules if s and isinstance(s, str)}
-		click.secho(
-			f"Created a set of {len(initial_molecules_set)} unique canonicalized initial molecules for filtering.",
-			fg="cyan",
-		)
-
-		all_reactions_written = set()
-
-		def read_smiles_from_db(db_path: str) -> List[str]:
-			"""Reads a database and returns a list of reaction SMILES, not keys."""
-			if not os.path.exists(db_path):
-				return []
-			env = lmdb.open(db_path, readonly=True, lock=False)
-			smiles_list = []
-			with env.begin() as txn:
-				for key, value in txn.cursor():
-					try:
-						# Load from the value, not the key
-						value_data = json.loads(value.decode("utf-8"))
-						smiles_list.append(value_data["smi"])
-					except (json.JSONDecodeError, KeyError) as e:
-						logging.warning(
-							f"Skipping malformed entry in {os.path.basename(db_path)} with key {key.hex()}: {e}"
-						)
-						continue
-			env.close()
-			return smiles_list
+		all_reactions_seen_hashes = set()
 
 		# --- Generation 0: Initial Dissociations ---
 		click.secho("\n--- G0: Performing Initial Bond Dissociations ---", bold=True)
 		g0_db_path = self._db_paths["candidates_g0"]
 		if os.path.exists(g0_db_path):
 			click.secho(f"Skipping G0, database already exists.", fg="green")
-			g0_reactions = read_smiles_from_db(g0_db_path)
+			g0_count = self._get_db_count(g0_db_path)
+			for smi in tqdm(self._iter_smiles_from_db(g0_db_path), total=g0_count, desc="G0: Loading hashes"):
+				all_reactions_seen_hashes.add(self._get_reaction_hash(smi))
 		else:
 			q = Queue(maxsize=self.n_workers * 2)
 			writer = Process(target=self._lmdb_writer, args=(q, g0_db_path))
 			writer.start()
 
-			g0_reactions = []
 			with Pool(self.n_workers) as pool:
 				results_iterator = pool.imap(get_dissociation_fragments, initial_molecules)
 
@@ -214,164 +218,213 @@ class ReactionSpace:
 						if not (f1 in initial_molecules_set and f2 in initial_molecules_set):
 							continue
 
-						reaction_smi = f"{parent_smi}>>{f1}.{f2}"
-						r = element_counts(parent_smi)
-						p = element_counts(f"{f1}.{f2}")
-						if reaction_smi not in all_reactions_written and p == r:
-							all_reactions_written.add(reaction_smi)
-							g0_reactions.append(reaction_smi)
+						# Dissociation: C -> A + B
+						rxn_smi = f"{parent_smi}>>{f1}.{f2}"
+						r_counts = element_counts(parent_smi)
+						p_counts = element_counts(f"{f1}.{f2}")
+						if r_counts == p_counts:
+							h = self._get_reaction_hash(rxn_smi)
+							if h not in all_reactions_seen_hashes:
+								all_reactions_seen_hashes.add(h)
+								key = hashlib.sha256(rxn_smi.encode("utf-8")).hexdigest().encode("utf-8")
+								value = json.dumps({"smi": rxn_smi, "gen": "G0"}).encode("utf-8")
+								q.put((key, value))
 
-							key = hashlib.sha256(reaction_smi.encode("utf-8")).hexdigest().encode("utf-8")
-							value = json.dumps({"smi": reaction_smi, "gen": "G0"}).encode("utf-8")
-							q.put((key, value))
-
-						# Add the addition reaction: A + B -> C
-						reaction_smi = f"{f1}.{f2}>>{parent_smi}"
-
-						r = element_counts(parent_smi)
-						p = element_counts(f"{f1}.{f2}")
-						if reaction_smi not in all_reactions_written and p == r:
-							all_reactions_written.add(reaction_smi)
-							g0_reactions.append(reaction_smi)
-
-							key = hashlib.sha256(reaction_smi.encode("utf-8")).hexdigest().encode("utf-8")
-							value = json.dumps({"smi": reaction_smi, "gen": "G0"}).encode("utf-8")
-							q.put((key, value))
+						# Addition: A + B -> C
+						rxn_smi = f"{f1}.{f2}>>{parent_smi}"
+						if r_counts == p_counts:
+							h = self._get_reaction_hash(rxn_smi)
+							if h not in all_reactions_seen_hashes:
+								all_reactions_seen_hashes.add(h)
+								key = hashlib.sha256(rxn_smi.encode("utf-8")).hexdigest().encode("utf-8")
+								value = json.dumps({"smi": rxn_smi, "gen": "G0"}).encode("utf-8")
+								q.put((key, value))
 
 			q.put(None)
 			writer.join()
 
-		click.secho(f"Found {len(g0_reactions):,} unique G0 reactions.", fg="green")
-		all_reactions_written.update(g0_reactions)
-		current_generation_reactions = g0_reactions
-		# print(g0_reactions)
-
-		g0_fragments = set()
-		for rxn_smi in g0_reactions:
-			_, frags = rxn_smi.split(">>")
-			g0_fragments.update(frags.split("."))
+		click.secho(f"Found {len(all_reactions_seen_hashes):,} unique G0 reactions.", fg="green")
 
 		# --- Generation 1: Transfer and Rearrangement Reactions ---
 		if self.num_generations >= 1:
-			click.secho(
-				f"\n--- G1: Generating Transfer and Rearrangement Reactions ---",
-				bold=True,
-			)
+			click.secho(f"\n--- G1: Generating Transfer and Rearrangement Reactions ---", bold=True)
 			g1_db_path = self._db_paths["candidates_g1"]
 			if os.path.exists(g1_db_path):
 				click.secho(f"Skipping G1, database already exists.", fg="green")
-				g1_reactions = read_smiles_from_db(g1_db_path)
+				g1_count = self._get_db_count(g1_db_path)
+				for smi in tqdm(self._iter_smiles_from_db(g1_db_path), total=g1_count, desc="G1: Loading hashes"):
+					all_reactions_seen_hashes.add(self._get_reaction_hash(smi))
 			else:
-				if len(current_generation_reactions) < 2:
+				click.secho("G1: Indexing G0 fragments to find valid reaction pairs...", fg="cyan")
+				fragment_to_rxn_idx = collections.defaultdict(list)
+				g0_smiles = []
+				g0_total = self._get_db_count(g0_db_path)
+				for idx, rxn in enumerate(
+					tqdm(self._iter_smiles_from_db(g0_db_path), total=g0_total, desc="G1: Indexing")
+				):
+					g0_smiles.append(rxn)
+					try:
+						_, right = rxn.split(">>")
+						for frag in right.split("."):
+							if frag:
+								fragment_to_rxn_idx[frag].append(idx)
+					except ValueError:
+						continue
+
+				if not g0_smiles:
 					click.secho("Not enough G0 reactions to generate G1. Skipping.", fg="yellow")
-					g1_reactions = []
 				else:
-					reaction_pairs = itertools.combinations(current_generation_reactions, 2)
-					total_pairs = math.comb(len(current_generation_reactions), 2)
+					seen_pairs = set()
+					for indices in tqdm(fragment_to_rxn_idx.values(), desc="G1: Finding pairs"):
+						if len(indices) > 1:
+							# For fragments with very high frequency, consider sampling or limiting to avoid N^2 explosion
+							if len(indices) > 2000:
+								logging.warning(f"Fragment indexing: skipping extremely high-frequency fragment.")
+								continue
+							for i in range(len(indices)):
+								for j in range(i + 1, len(indices)):
+									idx1, idx2 = indices[i], indices[j]
+									pair = (idx1, idx2) if idx1 < idx2 else (idx2, idx1)
+									seen_pairs.add(pair)
+
+					reaction_pairs = ((g0_smiles[i], g0_smiles[j]) for i, j in seen_pairs)
+					total_pairs = len(seen_pairs)
+					click.secho(f"G1: Found {total_pairs:,} candidate pairs.", fg="cyan")
 
 					q = Queue(maxsize=self.n_workers * 2)
 					writer = Process(target=self._lmdb_writer, args=(q, g1_db_path))
 					writer.start()
 
-					g1_reactions = []
 					with Pool(self.n_workers) as pool:
-						results_iterator = pool.imap_unordered(
-							worker_generate_new_reactions_g1,
-							reaction_pairs,
-							chunksize=1024,
-						)
-
-						for res_list in tqdm(results_iterator, total=total_pairs, desc="G1: Processing"):
-							for candidate in res_list:
-								if candidate not in all_reactions_written:
-									all_reactions_written.add(candidate)
-									g1_reactions.append(candidate)
-
-									key = hashlib.sha256(candidate.encode("utf-8")).hexdigest().encode("utf-8")
-									value = json.dumps({"smi": candidate, "gen": "G1"}).encode("utf-8")
-									q.put((key, value))
+						with tqdm(total=total_pairs, desc="G1: Processing") as pbar:
+							for batch in chunked_iterable(reaction_pairs, 1_000_000):
+								results_iterator = pool.imap_unordered(
+									worker_generate_new_reactions_g1, batch, chunksize=1024
+								)
+								for res_list in results_iterator:
+									for candidate in res_list:
+										h = self._get_reaction_hash(candidate)
+										if h not in all_reactions_seen_hashes:
+											all_reactions_seen_hashes.add(h)
+											key = hashlib.sha256(candidate.encode("utf-8")).hexdigest().encode("utf-8")
+											value = json.dumps({"smi": candidate, "gen": "G1"}).encode("utf-8")
+											q.put((key, value))
+									pbar.update(1)
 
 					q.put(None)
 					writer.join()
-
-			click.secho(f"Found {len(g1_reactions):,} unique G1 reactions.", fg="green")
-			all_reactions_written.update(g1_reactions)
-			current_generation_reactions = g1_reactions
-			# print(g1_reactions)
+					del seen_pairs
+					del fragment_to_rxn_idx
+					del g0_smiles
 
 		# --- Generation 2+: Higher-order reactions ---
 		for gen in range(2, self.num_generations + 1):
-			max_c = gen + 2
-
-			click.secho(
-				f"\n--- G{gen}: Generating Higher-order Reactions (max_complexity={self.max_reaction_complexity}) ---",
-				bold=True,
-			)
-			g2plus_db_path = self._db_paths["candidates_g2plus"].format(
-				gen=gen, max_c=min(max_c, self.max_reaction_complexity)
-			)
+			max_c = self.max_reaction_complexity
+			click.secho(f"\n--- G{gen}: Generating Higher-order Reactions (max_complexity={max_c}) ---", bold=True)
+			g2plus_db_path = self._db_paths["candidates_g2plus"].format(gen=gen, max_c=max_c)
 
 			if os.path.exists(g2plus_db_path):
 				click.secho(f"Skipping G{gen}, database already exists.", fg="green")
-				next_gen_reactions = read_smiles_from_db(g2plus_db_path)
+				g2_total = self._get_db_count(g2plus_db_path)
+				for smi in tqdm(
+					self._iter_smiles_from_db(g2plus_db_path), total=g2_total, desc=f"G{gen}: Loading hashes"
+				):
+					all_reactions_seen_hashes.add(self._get_reaction_hash(smi))
+				continue
+
+			# current_generation is G(gen-1)
+			if gen == 2:
+				current_gen_db = self._db_paths["candidates_g1"]
+				previous_gens_dbs = [self._db_paths["candidates_g0"]]
 			else:
-				if len(current_generation_reactions) < 1:
-					click.secho(
-						f"Not enough reactions from previous generation to generate G{gen}. Stopping.",
-						fg="yellow",
+				current_gen_db = self._db_paths["candidates_g2plus"].format(
+					gen=gen - 1, max_c=self.max_reaction_complexity
+				)
+				previous_gens_dbs = [self._db_paths["candidates_g0"], self._db_paths["candidates_g1"]]
+				for prev_gen in range(2, gen - 1):
+					previous_gens_dbs.append(
+						self._db_paths["candidates_g2plus"].format(gen=prev_gen, max_c=self.max_reaction_complexity)
 					)
-					break
 
-				previous_reactions = list(all_reactions_written - set(current_generation_reactions))
-				if not previous_reactions:
-					click.secho(
-						f"No previous reactions to combine with for G{gen}. Stopping.",
-						fg="yellow",
-					)
-					break
+			click.secho(f"G{gen}: Indexing previous reactions...", fg="cyan")
+			prev_product_to_rxn = collections.defaultdict(list)
+			prev_reactant_to_rxn = collections.defaultdict(list)
+			all_prev_smiles = []
 
-				reaction_pairs = itertools.product(current_generation_reactions, previous_reactions)
-				total_pairs = len(current_generation_reactions) * len(previous_reactions)
+			for db_p in previous_gens_dbs:
+				p_total = self._get_db_count(db_p)
+				for rxn in tqdm(
+					self._iter_smiles_from_db(db_p), total=p_total, desc=f"G{gen}: Indexing {os.path.basename(db_p)}"
+				):
+					idx = len(all_prev_smiles)
+					all_prev_smiles.append(rxn)
+					try:
+						reactants, products = rxn.split(">>")
+						for r in reactants.split("."):
+							if r:
+								prev_reactant_to_rxn[r].append(idx)
+						for p in products.split("."):
+							if p:
+								prev_product_to_rxn[p].append(idx)
+					except ValueError:
+						continue
 
-				q = Queue(maxsize=self.n_workers * 2)
-				writer = Process(target=self._lmdb_writer, args=(q, g2plus_db_path))
-				writer.start()
+			click.secho(f"G{gen}: Pairing with current generation and processing...", fg="cyan")
 
-				next_gen_reactions = []
-				with Pool(self.n_workers) as pool:
-					partial_worker = partial(
-						worker_generate_higher_gen_reactions,
-						max_reaction_complexity=self.max_reaction_complexity,
-					)
-					results_iterator = pool.imap_unordered(partial_worker, reaction_pairs, chunksize=1024)
+			q = Queue(maxsize=self.n_workers * 2)
+			writer = Process(target=self._lmdb_writer, args=(q, g2plus_db_path))
+			writer.start()
 
-					for res_list in tqdm(results_iterator, total=total_pairs, desc=f"G{gen}: Processing"):
-						for candidate in res_list:
-							if candidate not in all_reactions_written:
-								all_reactions_written.add(candidate)
-								next_gen_reactions.append(candidate)
+			def pair_generator():
+				curr_total = self._get_db_count(current_gen_db)
+				for rxn_curr in tqdm(
+					self._iter_smiles_from_db(current_gen_db), total=curr_total, desc=f"G{gen}: Pairing", leave=False
+				):
+					try:
+						reactants, products = rxn_curr.split(">>")
+						curr_reactants = {r for r in reactants.split(".") if r}
+						curr_products = {p for p in products.split(".") if p}
 
-								key = hashlib.sha256(candidate.encode("utf-8")).hexdigest().encode("utf-8")
-								value = json.dumps({"smi": candidate, "gen": f"G{gen}"}).encode("utf-8")
-								q.put((key, value))
+						matched_prev_indices = set()
+						# Case 1: Product of r_curr is reactant of r_prev
+						for p in curr_products:
+							if p in prev_reactant_to_rxn:
+								matched_prev_indices.update(prev_reactant_to_rxn[p])
+						# Case 2: Product of r_prev is reactant of r_curr
+						for r in curr_reactants:
+							if r in prev_product_to_rxn:
+								matched_prev_indices.update(prev_product_to_rxn[r])
+						# Case 3: Reactants share species
+						for r in curr_reactants:
+							if r in prev_reactant_to_rxn:
+								matched_prev_indices.update(prev_reactant_to_rxn[r])
 
-				q.put(None)
-				writer.join()
+						for prev_idx in matched_prev_indices:
+							yield (rxn_curr, all_prev_smiles[prev_idx])
+					except ValueError:
+						continue
 
-			click.secho(
-				f"Found {len(next_gen_reactions):,} unique G{gen} reactions.",
-				fg="green",
-			)
-			if not next_gen_reactions:
-				click.secho(f"No new reactions generated at G{gen}. Stopping.", fg="yellow")
-				break
+			with Pool(self.n_workers) as pool:
+				partial_worker = partial(
+					worker_generate_higher_gen_reactions, max_reaction_complexity=self.max_reaction_complexity
+				)
+				# Use a smaller chunksize for imap_unordered to keep the generator responsive
+				results_iterator = pool.imap_unordered(partial_worker, pair_generator(), chunksize=256)
 
-			all_reactions_written.update(next_gen_reactions)
-			current_generation_reactions = next_gen_reactions
-			# print(next_gen_reactions)
+				for res_list in tqdm(results_iterator, desc=f"G{gen}: Processing"):
+					for candidate in res_list:
+						h = self._get_reaction_hash(candidate)
+						if h not in all_reactions_seen_hashes:
+							all_reactions_seen_hashes.add(h)
+							key = hashlib.sha256(candidate.encode("utf-8")).hexdigest().encode("utf-8")
+							value = json.dumps({"smi": candidate, "gen": f"G{gen}"}).encode("utf-8")
+							q.put((key, value))
 
-		click.secho(f"\n--- Finalizing ---", bold=True)
-		click.secho(f"Total unique reaction candidates considered: {len(all_reactions_written):,}")
+			q.put(None)
+			writer.join()
+			del all_prev_smiles, prev_product_to_rxn, prev_reactant_to_rxn
+
+		click.secho(f"\nTotal unique reaction candidates: {len(all_reactions_seen_hashes):,}", bold=True)
 		click.secho("Hierarchical reaction network generation complete.", fg="green")
 
 	def verify_reactions(self):
@@ -568,23 +621,39 @@ class ReactionSpace:
 			click.secho("No verified reactions to build graph from.", fg="yellow")
 			return
 
+		def get_canonical(smi):
+			try:
+				from rdkit import Chem
+
+				mol = Chem.MolFromSmiles(smi)
+				if mol:
+					return Chem.MolToSmiles(mol, isomericSmiles=True)
+			except:
+				pass
+			return smi
+
 		G = nx.DiGraph()
 		with env.begin() as txn:
 			for key, _ in tqdm(txn.cursor(), total=num_reactions, desc="Building graph"):
-				reaction_smarts = key.decode()
-				reactants_smarts, _, product_smarts = reaction_smarts.partition(">>")
+				reaction_smi = key.decode()
+				left, _, right = reaction_smi.partition(">>")
 
-				G.add_node(reaction_smarts, type="reaction")
+				reactant_list = [get_canonical(s) for s in left.split(".") if s]
+				product_list = [get_canonical(s) for s in right.split(".") if s]
 
-				reactant_list = reactants_smarts.split(".")
+				# Generate a canonical reaction string for the node ID
+				can_rxn_smi = ".".join(sorted(reactant_list)) + ">>" + ".".join(sorted(product_list))
+
+				# We use the canonical SMILES as the ID, but keep the original for display
+				G.add_node(can_rxn_smi, type="reaction", smiles=reaction_smi)
+
 				for r_smi in reactant_list:
-					if r_smi:
-						G.add_node(r_smi, type="molecule")
-						G.add_edge(r_smi, reaction_smarts)
+					G.add_node(r_smi, type="molecule", smiles=r_smi)
+					G.add_edge(r_smi, can_rxn_smi)
 
-				if product_smarts:
-					G.add_node(product_smarts, type="molecule")
-					G.add_edge(reaction_smarts, product_smarts)
+				for p_smi in product_list:
+					G.add_node(p_smi, type="molecule", smiles=p_smi)
+					G.add_edge(can_rxn_smi, p_smi)
 
 		graph_data = nx.node_link_data(G, edges="links")
 		with open(output_json_path, "w") as f:
@@ -643,6 +712,45 @@ class ReactionSpace:
 			)
 		else:
 			click.secho("\nNo reactions were processed for image export.", fg="yellow")
+
+	def _get_candidate_db_paths(self) -> List[str]:
+		"""Helper to collect all existing candidate LMDB paths."""
+		candidate_db_paths = []
+		g0_path = self._db_paths["candidates_g0"]
+		if os.path.exists(g0_path):
+			candidate_db_paths.append(g0_path)
+
+		if self.num_generations >= 1:
+			g1_path = self._db_paths["candidates_g1"]
+			if os.path.exists(g1_path):
+				candidate_db_paths.append(g1_path)
+
+		for gen in range(2, self.num_generations + 1):
+			max_c = gen + 2
+			db_path = self._db_paths["candidates_g2plus"].format(
+				gen=gen, max_c=min(max_c, self.max_reaction_complexity)
+			)
+			if os.path.exists(db_path):
+				candidate_db_paths.append(db_path)
+		return candidate_db_paths
+
+	def export_to_kuzu(self, kuzu_dir: str = None, use_verified: bool = True, model_path: str = "model.script"):
+		"""Exports the reaction network to KuzuDB."""
+		from .kuzu_exporter import export_to_kuzu as kuzu_export
+
+		if kuzu_dir is None:
+			kuzu_dir = os.path.join(self.output_dir, "kuzu_db")
+
+		kuzu_export(self, kuzu_dir=kuzu_dir, use_verified=use_verified, model_path=model_path)
+
+	def update_kuzu_energies(self, kuzu_dir: str = None, model_path: str = "model.script"):
+		"""Updates free energy predictions in an existing KuzuDB."""
+		from .kuzu_exporter import update_kuzu_predictions
+
+		if kuzu_dir is None:
+			kuzu_dir = os.path.join(self.output_dir, "kuzu_db")
+
+		update_kuzu_predictions(kuzu_dir=kuzu_dir, model_path=model_path)
 
 	def explore(self):
 		"""Run the full workflow: find candidates, verify, export CSV, and export graph."""

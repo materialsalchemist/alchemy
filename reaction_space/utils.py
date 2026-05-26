@@ -115,3 +115,13 @@ def element_counts(side_smiles: str) -> Counter:
 			total[atom.GetSymbol()] += 1
 
 	return total
+
+
+def chunked_iterable(iterable, size):
+	"""Yield successive chunks from an iterable."""
+	it = iter(iterable)
+	while True:
+		chunk = list(itertools.islice(it, size))
+		if not chunk:
+			break
+		yield chunk
