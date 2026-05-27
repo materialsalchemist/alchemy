@@ -10,7 +10,6 @@ import networkx as nx
 import os
 import argparse
 
-
 def calculate_importance(kuzu_dir: str):
 	if not os.path.exists(kuzu_dir):
 		print(f"Error: KuzuDB not found at {kuzu_dir}")
@@ -21,7 +20,6 @@ def calculate_importance(kuzu_dir: str):
 
 	print("[importance] Loading graph from Kuzu into NetworkX…")
 
-	# Fetch all edges to build NetworkX graph
 	G = nx.Graph()
 
 	res = conn.execute("MATCH (a)-[r]->(b) RETURN a.id, b.id, r._label")
@@ -35,15 +33,12 @@ def calculate_importance(kuzu_dir: str):
 		print("[importance] Graph is empty.")
 		return
 
-	# 1. Calculate PageRank
 	print("[importance] Calculating PageRank…")
 	pagerank = nx.pagerank(G)
 
-	# 2. Calculate Degree Centrality
 	print("[importance] Calculating Degree Centrality…")
 	degree = nx.degree_centrality(G)
 
-	# 3. Update Kuzu schema to include centrality
 	print("[importance] Updating Kuzu schema…")
 	try:
 		conn.execute("ALTER TABLE Molecule ADD centrality DOUBLE DEFAULT 0.0")
@@ -55,7 +50,7 @@ def calculate_importance(kuzu_dir: str):
 	except Exception:
 		pass  # Already exists
 
-	# 4. Write back to Kuzu in batches
+	# Write back to Kuzu in batches
 	print("[importance] Writing scores back to Kuzu…")
 
 	# Group by node type if possible, or just update by ID
@@ -66,11 +61,6 @@ def calculate_importance(kuzu_dir: str):
 	batch_size = 2048
 	for i in range(0, len(scores), batch_size):
 		chunk = scores[i : i + batch_size]
-
-		# We need to know if it's a Molecule or Reaction to use the right table
-		# Or we can try to MATCH (n) if Kuzu supports it efficiently across tables
-		# In this schema, we have Molecule and Reaction tables.
-
 		# Update Molecules
 		conn.execute("UNWIND $rows AS r MATCH (m:Molecule {id: r.id}) SET m.centrality = r.score", {"rows": chunk})
 
