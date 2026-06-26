@@ -29,7 +29,7 @@ from .workers import (
 	worker_verify_reaction_batch,
 )
 
-from .utils import canonicalize_smiles, canonicalize_smiles_list, chunked_iterable
+from .utils import canonicalize_smiles, canonicalize_smiles_list, chunked_iterable, RADICAL_THRESHOLD
 
 
 @dataclass
@@ -40,6 +40,7 @@ class ReactionSpace:
 	n_workers: int = field(default_factory=cpu_count)
 	num_generations: int = 2
 	max_reaction_complexity: int = 3
+	radical_threshold: int = RADICAL_THRESHOLD
 	require_custom_reactant: bool = False
 
 	_db_paths: Dict[str, str] = field(init=False, default_factory=dict)
@@ -522,8 +523,12 @@ class ReactionSpace:
 		writer_env = lmdb.open(self._db_paths["verified"], map_size=10**11, writemap=True)
 
 		with writer_env.begin(write=True) as txn_out, Pool(self.n_workers) as pool:
+			partial_worker = partial(
+				worker_verify_reaction_batch,
+				threshold=self.radical_threshold,
+			)
 			for verified_batch in tqdm(
-				pool.imap_unordered(worker_verify_reaction_batch, batch_generator),
+				pool.imap_unordered(partial_worker, batch_generator),
 				total=total_batches,
 				desc="Verifying Batches",
 			):

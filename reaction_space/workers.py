@@ -12,6 +12,9 @@ from .utils import (
 	canonicalize_smiles_list,
 	add_atomic_compositions,
 	verify_reaction,
+	contains_bare_atom_species,
+	exceeds_radical_threshold,
+	RADICAL_THRESHOLD,
 )
 
 # Suppress verbose RDKit logging
@@ -448,6 +451,7 @@ rxn_mapper_instance = None
 
 def worker_verify_reaction_batch(
 	reaction_smi_bytes_batch: List[bytes],
+	threshold: int = RADICAL_THRESHOLD,
 	confidence_threshold: float = 0.9,
 ) -> List[str]:
 	"""
@@ -477,6 +481,12 @@ def worker_verify_reaction_batch(
 			p_cans = sorted([Chem.MolToSmiles(m, canonical=True) for m in product_mols])
 
 			if r_cans == p_cans:
+				continue
+
+			if contains_bare_atom_species(r_cans) or contains_bare_atom_species(p_cans):
+				continue
+
+			if exceeds_radical_threshold(r_cans, p_cans, threshold=threshold):
 				continue
 
 			final_canonical_reaction = f"{'.'.join(r_cans)}>>{'.'.join(p_cans)}"

@@ -16,30 +16,31 @@ def calculate_importance(kuzu_dir: str):
 		return
 
 	db = kuzu.Database(kuzu_dir)
-	conn = db.connect()
+	conn = kuzu.Connection(db)
 
-	print("[importance] Loading graph from Kuzu into NetworkX…")
+	print("[importance] Loading graph from Kuzu into NetworkX…", flush=True)
 
 	G = nx.Graph()
 
-	res = conn.execute("MATCH (a)-[r]->(b) RETURN a.id, b.id, r._label")
-	while res.has_next():
-		u, v, label = res.get_next()
-		G.add_edge(u, v, label=label)
+	for rel_label in ("REACTANT_OF", "PRODUCT_OF"):
+		res = conn.execute(f"MATCH (a)-[r:{rel_label}]->(b) RETURN a.id, b.id")
+		while res.has_next():
+			u, v = res.get_next()
+			G.add_edge(u, v, label=rel_label)
 
-	print(f"[importance] Graph loaded: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges.")
+	print(f"[importance] Graph loaded: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges.", flush=True)
 
 	if G.number_of_nodes() == 0:
 		print("[importance] Graph is empty.")
 		return
 
-	print("[importance] Calculating PageRank…")
+	print("[importance] Calculating PageRank…", flush=True)
 	pagerank = nx.pagerank(G)
 
-	print("[importance] Calculating Degree Centrality…")
+	print("[importance] Calculating Degree Centrality…", flush=True)
 	degree = nx.degree_centrality(G)
 
-	print("[importance] Updating Kuzu schema…")
+	print("[importance] Updating Kuzu schema…", flush=True)
 	try:
 		conn.execute("ALTER TABLE Molecule ADD centrality DOUBLE DEFAULT 0.0")
 	except Exception:
@@ -51,7 +52,7 @@ def calculate_importance(kuzu_dir: str):
 		pass  # Already exists
 
 	# Write back to Kuzu in batches
-	print("[importance] Writing scores back to Kuzu…")
+	print("[importance] Writing scores back to Kuzu…", flush=True)
 
 	# Group by node type if possible, or just update by ID
 	# PageRank scores are typically small, so we'll store them as centrality
@@ -69,7 +70,7 @@ def calculate_importance(kuzu_dir: str):
 
 		print(f"  Updated {min(i + batch_size, len(scores))}/{len(scores)}...", end="\r")
 
-	print("\n[importance] Done.")
+	print("\n[importance] Done.", flush=True)
 
 
 if __name__ == "__main__":

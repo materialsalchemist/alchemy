@@ -1,4 +1,5 @@
 from typing import Set, Tuple, List, Dict
+import itertools
 from rdkit import Chem, RDLogger
 from collections import Counter
 
@@ -9,6 +10,8 @@ warnings.filterwarnings("ignore", category=UserWarning, module="rxnmapper")
 
 # Suppress verbose RDKit logging
 RDLogger.DisableLog("rdApp.*")
+
+RADICAL_THRESHOLD = 2
 
 
 def mol_to_explicit_smiles(mol, canonical=True) -> str:
@@ -61,6 +64,36 @@ def add_atomic_compositions(smiles_list: List[str]) -> Dict[str, int]:
 			total_counts[sym] = total_counts.get(sym, 0) + 1
 
 	return total_counts
+
+
+def is_bare_atom_smiles(smiles: str) -> bool:
+	"""Return True for standalone unhydrogenated atoms such as [C], [O], [N], or [H]."""
+	mol = Chem.MolFromSmiles(smiles)
+	if mol is None or mol.GetNumAtoms() != 1 or mol.GetNumBonds() != 0:
+		return False
+	atom = mol.GetAtomWithIdx(0)
+	return atom.GetTotalNumHs() == 0
+
+
+def contains_bare_atom_species(smiles_list: List[str]) -> bool:
+	"""Return True if any molecule in a reaction side is a standalone atom species."""
+	return any(is_bare_atom_smiles(smi) for smi in smiles_list)
+
+
+def total_radical_electrons(smiles_list: List[str]) -> int:
+	"""Return total radical electrons across a list of molecule SMILES."""
+	total = 0
+	for smi in smiles_list:
+		mol = Chem.MolFromSmiles(smi)
+		if mol is None:
+			continue
+		total += sum(atom.GetNumRadicalElectrons() for atom in mol.GetAtoms())
+	return total
+
+
+def exceeds_radical_threshold(reactants: List[str], products: List[str], threshold: int = RADICAL_THRESHOLD) -> bool:
+	"""Return True if either reaction side has more radical electrons than threshold."""
+	return max(total_radical_electrons(reactants), total_radical_electrons(products)) > threshold
 
 
 def verify_reaction(reactants: List[str], products: List[str]) -> bool:

@@ -249,7 +249,6 @@ class ChemicalSpace:
 		Reads composition DB, builds molecules, and saves unique ones.
 		"""
 		output_db_path = self._db_paths["molecules"].format(n=n_atoms)
-		env_out = lmdb.open(output_db_path, map_size=10**11, writemap=True, metasync=False, sync=False)
 
 		input_db_path = self._db_paths["compositions"].format(n=n_atoms)
 		if not os.path.exists(input_db_path):
@@ -265,22 +264,30 @@ class ChemicalSpace:
 		writer.start()
 
 		env_in = lmdb.open(input_db_path, readonly=True, lock=False)
-		total_tasks = env_in.stat()["entries"]
-		with env_in.begin() as txn, Pool(self.n_workers) as pool:
-			vals = (v for _, v in txn.cursor())
-			for result in tqdm(
-				pool.imap_unordered(worker_build_molecule, vals, chunksize=1024),
-				total=total_tasks,
-				desc=f"Building N={n_atoms}",
-			):
-				if result:
-					smi, data = result
-					q.put((smi.encode(), data))
+		try:
+			total_tasks = env_in.stat()["entries"]
+			with env_in.begin() as txn, Pool(self.n_workers) as pool:
+				vals = (v for _, v in txn.cursor())
+				for result in tqdm(
+					pool.imap_unordered(worker_build_molecule, vals, chunksize=1024),
+					total=total_tasks,
+					desc=f"Building N={n_atoms}",
+				):
+					if result:
+						smi, data = result
+						q.put((smi.encode(), data))
+		finally:
+			env_in.close()
 
 		q.put(None)
 		writer.join()
 
-		click.secho(f"\nTotal unique molecules found: {env_out.stat()['entries']:,}", fg="green")
+		env_out = lmdb.open(output_db_path, readonly=True, lock=False)
+		try:
+			total_entries = env_out.stat()["entries"]
+			click.secho(f"\nTotal unique molecules found: {total_entries:,}", fg="green")
+		finally:
+			env_out.close()
 
 	def export_to_csv(self, filename: str = "molecules.csv"):
 		"""Exports the final molecules from the DB to a CSV file."""

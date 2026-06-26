@@ -109,6 +109,14 @@ This command will:
 3. Export verified reactions to `reaction_space_results/reactions.csv`.
 4. Export the reaction network graph to `reaction_space_results/reaction_network.json`.
 
+You can also control radical filtering with `--radical-threshold`:
+
+```bash
+alchemy reaction explore --radical-threshold 3 --input-csv chemical_space_results/molecules.csv --output-dir reaction_space_results
+```
+
+A lower threshold reduces the maximum allowed radical electrons per reactant or product side during reaction verification.
+
 #### Individual Stages
 
 - **Stage 1: Find Reaction Candidates**
@@ -137,6 +145,17 @@ This command will:
   ```
 
 For more options, use the `--help` flag: `alchemy reaction --help`.
+
+
+
+### Paper examples
+
+```bash
+alchemy chemical explore --smiles "CN(C)C" -a C -a N -a H --max-atoms 5 --output-dir CNCC
+alchemy reaction explore --generations 1 --max-complexity 3 --input-csv CNCC/molecules.csv --output-dir CNCC_reactions_radicals_2 --radical-threshold 2
+
+alchemy reaction explore --generations 1 --max-complexity 3 --input-csv CNCC/molecules.csv --output-dir CNCC_reactions_radicals_0 --radical-threshold 0
+```
 
 ### Web Visualization
 

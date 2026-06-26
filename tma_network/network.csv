@@ -1,0 +1,8 @@
+tag,role,reactants,products,delta_g_eV,mechanism
+F1,formation,CN(C)N.[CH3],CN(C)C.[NH2],-0.164,"methyl adds at N, ·NH2 leaves"
+F2,formation,CN(C)N=N.[CH3],CN(C)C.[N]=N,-0.064,"methyl adds at N, ·N=N leaves"
+C1,consumption,CN(C)C.[CH]=C,C=CN(C)C.[CH3],-0.826,"vinyl adds at N, ·CH3 leaves"
+C2,consumption,CN(C)C.[CH2]N,CN(C)CN.[CH3],-0.531,"aminomethyl adds at N, ·CH3 leaves"
+E1,extension,C=CN(C)C.[CH]=C,C=CC=C.C[N]C,-0.438,"vinyl displaces NMe2 -> 1,3-butadiene"
+E2,extension,CN(C)CN.[CH]=C,C=CCN.C[N]C,-0.489,vinyl displaces NMe2 -> allylamine
+CYC,cycle,C[N]C.[CH3],CN(C)C,-0.001,·NMe2 + ·CH3 recombination (closes cycle)

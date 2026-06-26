@@ -219,7 +219,10 @@ def export_to_kuzu(
 	# Delete the old directory to avoid "duplicated primary key" errors during COPY.
 	if os.path.exists(kuzu_dir):
 		print(f"[kuzu] Removing existing database at {kuzu_dir} for fresh export…")
-		shutil.rmtree(kuzu_dir)
+		if os.path.isdir(kuzu_dir):
+			shutil.rmtree(kuzu_dir)
+		else:
+			os.remove(kuzu_dir)
 
 	parent_dir = os.path.dirname(kuzu_dir)
 	if parent_dir:
