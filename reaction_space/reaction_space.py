@@ -4,6 +4,7 @@ import click
 import itertools
 import os
 import collections
+import random
 from multiprocessing import Pool, Process, Queue
 from functools import partial
 import lmdb
@@ -42,6 +43,21 @@ class ReactionSpace:
 	max_reaction_complexity: int = 3
 	radical_threshold: int = RADICAL_THRESHOLD
 	require_custom_reactant: bool = False
+
+	# G1 pairs two G0 dissociations that share a product fragment; that shared
+	# fragment is the group which moves. Pairing a fragment produced by n
+	# dissociations costs n(n-1)/2 pairs, so the small ubiquitous carriers have to
+	# be bounded somehow. Sampling them keeps the reaction class; skipping them
+	# removes it outright, and skipping [H] removes hydrogen abstraction from the
+	# network entirely. "skip" reproduces the historical behaviour.
+	fragment_pair_cap: int = 2000
+	fragment_cap_strategy: str = "sample"
+	fragment_sample_seed: int = 0
+	# Reloading the seen-hash set from an existing candidate store costs a full
+	# scan and several GB at 27M records. The set only avoids queueing duplicates;
+	# LMDB already deduplicates by key, so skipping it is safe when the stores are
+	# being reused rather than extended.
+	reuse_existing_candidates: bool = False
 
 	_db_paths: Dict[str, str] = field(init=False, default_factory=dict)
 
@@ -199,16 +215,17 @@ class ReactionSpace:
 		g0_db_path = self._db_paths["candidates_g0"]
 		if os.path.exists(g0_db_path):
 			click.secho(f"Skipping G0, database already exists.", fg="green")
-			g0_count = self._get_db_count(g0_db_path)
-			for smi in tqdm(self._iter_smiles_from_db(g0_db_path), total=g0_count, desc="G0: Loading hashes"):
-				all_reactions_seen_hashes.add(self._get_reaction_hash(smi))
+			if not self.reuse_existing_candidates:
+				g0_count = self._get_db_count(g0_db_path)
+				for smi in tqdm(self._iter_smiles_from_db(g0_db_path), total=g0_count, desc="G0: Loading hashes"):
+					all_reactions_seen_hashes.add(self._get_reaction_hash(smi))
 		else:
 			q = Queue(maxsize=self.n_workers * 2)
 			writer = Process(target=self._lmdb_writer, args=(q, g0_db_path))
 			writer.start()
 
 			with Pool(self.n_workers) as pool:
-				results_iterator = pool.imap(get_dissociation_fragments, initial_molecules)
+				results_iterator = pool.imap(get_dissociation_fragments, initial_molecules, chunksize=256)
 
 				for parent_smi, frag_set in tqdm(
 					zip(initial_molecules, results_iterator),
@@ -252,9 +269,10 @@ class ReactionSpace:
 			g1_db_path = self._db_paths["candidates_g1"]
 			if os.path.exists(g1_db_path):
 				click.secho(f"Skipping G1, database already exists.", fg="green")
-				g1_count = self._get_db_count(g1_db_path)
-				for smi in tqdm(self._iter_smiles_from_db(g1_db_path), total=g1_count, desc="G1: Loading hashes"):
-					all_reactions_seen_hashes.add(self._get_reaction_hash(smi))
+				if not self.reuse_existing_candidates:
+					g1_count = self._get_db_count(g1_db_path)
+					for smi in tqdm(self._iter_smiles_from_db(g1_db_path), total=g1_count, desc="G1: Loading hashes"):
+						all_reactions_seen_hashes.add(self._get_reaction_hash(smi))
 			else:
 				click.secho("G1: Indexing G0 fragments to find valid reaction pairs...", fg="cyan")
 				fragment_to_rxn_idx = collections.defaultdict(list)
@@ -275,21 +293,72 @@ class ReactionSpace:
 				if not g0_smiles:
 					click.secho("Not enough G0 reactions to generate G1. Skipping.", fg="yellow")
 				else:
-					seen_pairs = set()
-					for indices in tqdm(fragment_to_rxn_idx.values(), desc="G1: Finding pairs"):
-						if len(indices) > 1:
-							# For fragments with very high frequency, consider sampling or limiting to avoid N^2 explosion
-							if len(indices) > 2000:
-								logging.warning(f"Fragment indexing: skipping extremely high-frequency fragment.")
-								continue
-							for i in range(len(indices)):
-								for j in range(i + 1, len(indices)):
-									idx1, idx2 = indices[i], indices[j]
-									pair = (idx1, idx2) if idx1 < idx2 else (idx2, idx1)
-									seen_pairs.add(pair)
+					capped_fragments = []
+					rng = random.Random(self.fragment_sample_seed)
 
-					reaction_pairs = ((g0_smiles[i], g0_smiles[j]) for i, j in seen_pairs)
-					total_pairs = len(seen_pairs)
+					def _pair_indices(indices):
+						"""Indices to pair for one shared fragment, honouring the cap."""
+						if len(indices) <= self.fragment_pair_cap:
+							return indices
+						if self.fragment_cap_strategy == "skip":
+							return []
+						return rng.sample(indices, self.fragment_pair_cap)
+
+					for frag, indices in fragment_to_rxn_idx.items():
+						if len(indices) > self.fragment_pair_cap:
+							capped_fragments.append({"fragment": frag, "producers": len(indices)})
+
+					def pair_generator():
+						"""Stream pairs instead of materialising them.
+
+						The old implementation collected every pair into a set, which
+						at this scale is tens of millions of tuples and several GB;
+						that memory pressure, not CPU, is what the cap was really
+						guarding. Streaming removes it. Emitting a pair twice is
+						harmless because the caller deduplicates by reaction hash.
+						"""
+						for indices in fragment_to_rxn_idx.values():
+							if len(indices) < 2:
+								continue
+							selected = _pair_indices(indices)
+							for i in range(len(selected)):
+								for j in range(i + 1, len(selected)):
+									a, b = selected[i], selected[j]
+									if a > b:
+										a, b = b, a
+									yield (g0_smiles[a], g0_smiles[b])
+
+					total_pairs = 0
+					for indices in fragment_to_rxn_idx.values():
+						n = len(indices)
+						if n < 2:
+							continue
+						if n > self.fragment_pair_cap:
+							n = 0 if self.fragment_cap_strategy == "skip" else self.fragment_pair_cap
+						total_pairs += n * (n - 1) // 2
+
+					if capped_fragments:
+						report_path = os.path.join(self.output_dir, "capped_fragments.json")
+						with open(report_path, "w") as fh:
+							json.dump(
+								{
+									"cap": self.fragment_pair_cap,
+									"strategy": self.fragment_cap_strategy,
+									"seed": self.fragment_sample_seed,
+									"fragments": sorted(capped_fragments, key=lambda d: -d["producers"]),
+								},
+								fh,
+								indent=2,
+							)
+						names = ", ".join(d["fragment"] for d in capped_fragments[:8])
+						click.secho(
+							f"G1: {len(capped_fragments)} fragment(s) exceed the pair cap of "
+							f"{self.fragment_pair_cap:,} and were {self.fragment_cap_strategy}d: {names}",
+							fg="yellow",
+						)
+						click.secho(f"G1: details written to {report_path}", fg="yellow")
+
+					reaction_pairs = pair_generator()
 					click.secho(f"G1: Found {total_pairs:,} candidate pairs.", fg="cyan")
 
 					q = Queue(maxsize=self.n_workers * 2)
@@ -314,7 +383,6 @@ class ReactionSpace:
 
 					q.put(None)
 					writer.join()
-					del seen_pairs
 					del fragment_to_rxn_idx
 					del g0_smiles
 
@@ -429,7 +497,7 @@ class ReactionSpace:
 		click.secho("Hierarchical reaction network generation complete.", fg="green")
 
 	def verify_reactions(self):
-		click.secho("\n--- Step 2: Verifying Reactions with RXNMapper ---", bold=True)
+		click.secho("\n--- Step 2: Verifying Reactions ---", bold=True)
 
 		custom_reactants_filter = set()
 		if self.require_custom_reactant:
@@ -512,7 +580,10 @@ class ReactionSpace:
 				fg="cyan",
 			)
 
-		batch_size = 4
+		# Four candidates per task turned 27.5M candidates into 6.9M dispatches,
+		# and the round trip dominated the work. Larger batches with a chunksize
+		# cut that by two orders of magnitude.
+		batch_size = 512
 		batch_generator = self._lmdb_batch_iterator(
 			candidate_db_paths,
 			batch_size,
@@ -522,21 +593,36 @@ class ReactionSpace:
 
 		writer_env = lmdb.open(self._db_paths["verified"], map_size=10**11, writemap=True)
 
-		with writer_env.begin(write=True) as txn_out, Pool(self.n_workers) as pool:
-			partial_worker = partial(
-				worker_verify_reaction_batch,
-				threshold=self.radical_threshold,
-			)
-			for verified_batch in tqdm(
-				pool.imap_unordered(partial_worker, batch_generator),
-				total=total_batches,
-				desc="Verifying Batches",
-			):
-				for result_smi, gen in verified_batch:
-					if result_smi:
-						key = hashlib.sha256(result_smi.encode("utf-8")).hexdigest().encode("utf-8")
-						value = json.dumps({"smi": result_smi, "gen": gen}).encode("utf-8")
-						txn_out.put(key, value, overwrite=False)
+		# One transaction spanning the whole run keeps every dirty page resident,
+		# so commit periodically instead.
+		commit_every = 50_000
+		pending = 0
+		txn_out = writer_env.begin(write=True)
+		try:
+			with Pool(self.n_workers) as pool:
+				partial_worker = partial(
+					worker_verify_reaction_batch,
+					threshold=self.radical_threshold,
+				)
+				for verified_batch in tqdm(
+					pool.imap_unordered(partial_worker, batch_generator, chunksize=4),
+					total=total_batches,
+					desc="Verifying Batches",
+				):
+					for result_smi, gen in verified_batch:
+						if result_smi:
+							key = hashlib.sha256(result_smi.encode("utf-8")).hexdigest().encode("utf-8")
+							value = json.dumps({"smi": result_smi, "gen": gen}).encode("utf-8")
+							txn_out.put(key, value, overwrite=False)
+							pending += 1
+					if pending >= commit_every:
+						txn_out.commit()
+						txn_out = writer_env.begin(write=True)
+						pending = 0
+			txn_out.commit()
+		except BaseException:
+			txn_out.abort()
+			raise
 
 		click.secho(
 			f"Verified and saved {writer_env.stat()['entries']:,} unique, chemically plausible reactions.",

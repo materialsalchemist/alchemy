@@ -95,14 +95,26 @@ def find_candidates(input_csv, output_dir, workers, generations, max_complexity)
 
 @reaction_cli.command()
 @common_options
-def verify_reactions(input_csv, output_dir, workers, generations, max_complexity):
+@click.option(
+	"-r",
+	"--radical-threshold",
+	type=int,
+	default=RADICAL_THRESHOLD,
+	show_default=True,
+	help="Maximum allowed radical electrons per reaction side before filtering.",
+)
+def verify_reactions(input_csv, output_dir, workers, generations, max_complexity, radical_threshold):
 	"""Step 2: Verify candidates from DB using RDKit."""
+	# Without this option the staged workflow silently verified at the default
+	# threshold, so a run of `find-candidates` then `verify-reactions` could not
+	# reproduce a network produced by `explore -r 1`.
 	space = ReactionSpace(
 		input_csv=input_csv,
 		output_dir=output_dir,
 		n_workers=workers,
 		num_generations=generations,
 		max_reaction_complexity=max_complexity,
+		radical_threshold=radical_threshold,
 	)
 	space.verify_reactions()
 

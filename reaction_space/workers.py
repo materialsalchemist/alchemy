@@ -5,7 +5,13 @@ import warnings
 from reaction_space.utils import element_counts
 
 warnings.filterwarnings("ignore", category=UserWarning, module="rxnmapper")
-from rxnmapper import RXNMapper
+
+# RXNMapper is deliberately NOT imported here. It pulls in transformers and torch,
+# costing ~400 MB of resident memory in every process; because multiprocessing
+# spawns rather than forks on Windows, each of cpu_count() workers pays it, which
+# is enough to exhaust a 16 GB machine. The confidence-filtering experiment that
+# used it was not retained (see the manuscript, "Exploratory RXNMapper test").
+# If it is ever reinstated, import it lazily inside the worker that needs it.
 
 from .utils import (
 	canonicalize_smiles,
@@ -446,23 +452,18 @@ def worker_generate_higher_gen_reactions(reaction_pair: Tuple[str, str], max_rea
 		return []
 
 
-rxn_mapper_instance = None
-
-
 def worker_verify_reaction_batch(
 	reaction_smi_bytes_batch: List[bytes],
 	threshold: int = RADICAL_THRESHOLD,
-	confidence_threshold: float = 0.9,
 ) -> List[str]:
 	"""
 	Worker function to verify a BATCH of reaction SMILES.
-	Initializes the RXNMapper model only once per process.
+
+	Applies the retained rule-based filters only: RDKit parseability, canonical
+	distinctness of the two sides, exclusion of bare atomic species, and the
+	radical-count threshold. RXNMapper confidence filtering was evaluated and not
+	retained, so no model is loaded here.
 	"""
-	global rxn_mapper_instance
-
-	if rxn_mapper_instance is None:
-		rxn_mapper_instance = RXNMapper()
-
 	valid_reactions = []
 	reactions_to_map = []
 	reactions_gen = []
@@ -499,21 +500,6 @@ def worker_verify_reaction_batch(
 
 	if not reactions_to_map:
 		return []
-
-	# try:
-	#     results = rxn_mapper_instance.get_attention_guided_atom_maps(reactions_to_map)
-
-	#     for original_smi, gen, result in zip(reactions_to_map, reactions_gen, results):
-	#         confidence = result.get('confidence', 0.0)
-	#         mapped_rxn = result.get('mapped_rxn', "")
-
-	#         if confidence >= confidence_threshold:
-	#             canonical_form = original_reactions_map.get(original_smi)
-	#             if canonical_form:
-	#                 valid_reactions.append((canonical_form, gen))
-
-	# except Exception as e:
-	#     logging.warning(f"rxnmapper failed for a batch: {e}")
 
 	for original_smi, gen in zip(reactions_to_map, reactions_gen):
 		canonical_form = original_reactions_map.get(original_smi)
