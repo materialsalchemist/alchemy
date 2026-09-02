@@ -15,3 +15,18 @@ results_*/
 *_results/
 **/db/
 CNCC_*/
+
+# training/ run artifacts -- large binaries and run logs, never committed.
+# See training/README.md for where these actually live on disk.
+training/qm9_data/
+training/**/*.ckpt
+training/**/lightning_logs/
+training/model_original_geometry_seed*.script
+training/run_seed*/
+training/run_seed*.log
+training/run_seed*.nohup.log
+training/run_seed*.resources.log
+training/run_seed*.exitstatus*
+training/smoke_run/
+training/smoke_test*.log
+training/splitting.lock
